@@ -97,19 +97,28 @@ export function verifyProof(result: DemoResult): string[] {
   if (result.corrobo.first.evidenceState !== "APPLIED") failures.push(`corrobo: evidence ${result.corrobo.first.evidenceState}, expected APPLIED`);
   if (result.corrobo.first.disposition !== "COMPLETE") failures.push(`corrobo: disposition ${result.corrobo.first.disposition}, expected COMPLETE`);
   if (result.corrobo.again.disposition !== "COMPLETE") failures.push("corrobo: running again did not stay COMPLETE");
+  const corroboPosts = result.corrobo.events.filter((e) => e.kind === "committed").length;
+  if (corroboPosts !== 1) failures.push(`corrobo: the ledger received ${corroboPosts} committed POSTs, expected 1`);
   return failures;
 }
 
 // --- presentation -----------------------------------------------------------------------------
 
-const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
-const paint = (code: string) => (s: string) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
-const bold = paint("1");
-const dim = paint("2");
-const red = paint("31");
-const green = paint("32");
+/** How emphasized fragments are drawn: ANSI for the terminal, SVG spans for docs/assets. */
+export interface Formatter {
+  bold(s: string): string;
+  dim(s: string): string;
+  red(s: string): string;
+  green(s: string): string;
+}
 
-export function renderDemo(result: DemoResult): string[] {
+const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+const ansi = (code: string) => (s: string) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
+export const terminalFormat: Formatter = { bold: ansi("1"), dim: ansi("2"), red: ansi("31"), green: ansi("32") };
+const { red } = terminalFormat;
+
+export function renderDemo(result: DemoResult, format: Formatter = terminalFormat): string[] {
+  const { bold, dim, red, green } = format;
   const lines: string[] = [];
   const credit = `$${(INTENT.amountCents / 100).toFixed(2)} credit to ${INTENT.accountId}`;
   lines.push(bold(`Issue a ${credit}. The ledger commits it, then the response is lost.`));
@@ -144,10 +153,11 @@ export function renderDemo(result: DemoResult): string[] {
   }
   lines.push(`  reconcile ${green(result.corrobo.first.evidenceState ?? "—")}`);
   lines.push(`  recover   ${green(result.corrobo.first.disposition ?? "—")}   no retry`);
-  lines.push(`  run again ${green(result.corrobo.again.disposition ?? "—")}   execute() not called`);
+  lines.push(`  run again ${green(result.corrobo.again.disposition ?? "—")}   no second POST`);
   lines.push(`  ledger: ${bold(String(result.corrobo.creditsInLedger))} credit   ${green("✓ credited once")}`);
   lines.push("");
   lines.push(dim("Credit counts are read from the ledger's own API, not from corrobo's records."));
+  lines.push(dim("Lost before commit, or landing late? See tests/timeout-demo.test.ts."));
   return lines;
 }
 

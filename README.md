@@ -125,6 +125,12 @@ The acknowledgement is intentional: `PostgresStore` durably stores operation sta
 
 ## Examples
 
+**Start here: `npm run demo`** ([`examples/timeout-after-write`](examples/timeout-after-write)). A local ledger commits a $50 credit, then drops the connection before answering. The naive catch-and-retry client credits the account twice; corrobo checks the ledger by its own reference and stops at one. Both counts are read from the ledger's own API, and the command exits non-zero if the proof doesn't hold.
+
+![npm run demo: the naive retry credits the account twice; corrobo checks the ledger and credits once](docs/assets/timeout-after-write.svg)
+
+The same ledger drives the tests for a request lost *before* commit (corrobo waits out `maxInFlightMs`, re-checks, then retries once) and a request that lands *late*, after corrobo first looked (the re-check finds it; no second POST) — see [`tests/timeout-demo.test.ts`](tests/timeout-demo.test.ts). Regenerate the image from a real run with `npm run demo:svg`.
+
 - **[`examples/rest`](examples/rest)** — a generic order-cancellation HTTP mutation against a real local server (no external credentials). Run `npm run example:rest` for a deterministic walkthrough of normal success, timeout-before-write, timeout-after-write (the headline case), a stale-version conflict, async `PENDING` convergence, and an unresolvable `UNKNOWN`.
 - **[`examples/stripe-refund`](examples/stripe-refund)** — see below.
 - **[`examples/jev-refund`](examples/jev-refund)** — a probabilistic pre-execution judgment (using TypeSafe AI's Jev) feeding a deterministic `authorize()` policy, with corrobo owning execution and post-execution reconciliation. Run `npm run example:jev` (no API key needed). See [Jev / probabilistic decision systems](#jev--probabilistic-decision-systems) below.
