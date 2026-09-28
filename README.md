@@ -65,7 +65,7 @@ result.evidenceState; // "APPLIED" | "NOT_APPLIED" | "CONFLICTED" | "PENDING" | 
 result.disposition;   // "COMPLETE" | "RETRY" | "REPLAN" | "REVIEW" | "INVESTIGATE" | null (only when PENDING)
 ```
 
-`runEffect` is safe to call again with the same `identity`: it only calls `execute()` when doing so is actually safe (a fresh operation, or a prior `RETRY`). A completed, conflicted, or under-review operation returns its recorded result instead of re-attempting the mutation.
+`runEffect` is safe to call again with the same `identity`: it only calls `execute()` when doing so is actually safe (a fresh operation, or a prior `RETRY` whose `retryNotBefore`, if any, has passed and whose effect still isn't observed). A completed, conflicted, or under-review operation returns its recorded result instead of re-attempting the mutation.
 
 ## The headline case: timeout after the write already happened
 
@@ -90,7 +90,7 @@ This is the reason corrobo exists. A `try { await cancel() } catch { retry() }` 
 These are two different vocabularies on purpose. Evidence state is what you can establish about the world. Disposition is what corrobo recommends doing about it — and it's derived from evidence state, never the other way around.
 
 - `APPLIED` → `COMPLETE`.
-- `NOT_APPLIED` → `RETRY` only if the operation type is actually safe to retry (`retryPolicy.retryOnNotApplied`) and attempts remain; otherwise `INVESTIGATE`.
+- `NOT_APPLIED` → `RETRY` only if the operation type is actually safe to retry (`retryPolicy.retryOnNotApplied`), attempts remain, and a late landing is ruled out; otherwise `INVESTIGATE`. If `execute()` failed at the transport level (a timeout), the request may still land after corrobo looked: without a declared `maxInFlightMs` that is `INVESTIGATE`; with one, the `RETRY` carries `retryNotBefore` and corrobo re-observes before retrying — see [in-flight requests](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
 - `CONFLICTED` → `REPLAN` — the world changed under the plan; a new intent and identity are needed, not a retry of this one.
 - `PENDING` → **no disposition.** Some operations (an async payment, a converging Kubernetes deployment) legitimately acknowledge a request before the effect is final; corrobo re-observes on the next call rather than re-executing.
 - `UNKNOWN` → `INVESTIGATE`, never a silent retry. This is a legitimate, permanent-until-a-human-looks answer — corrobo will not guess that a duplicate side effect is safe just because a retry loop wants one.
@@ -104,7 +104,10 @@ See [`docs/v0.1-spec.md`](docs/v0.1-spec.md) for the full type-level contract, i
 - **`PostgresStore`** (from `corrobo/postgres`) — the production-shaped store. One table, one `CREATE TABLE IF NOT EXISTS` migration (`PostgresStore.migrate(pool)`), no ORM.
   - **Crash recovery**: corrobo durably reserves an attempt *before* `execute()` is ever called. If a worker dies mid-attempt, the next run for that identity observes and reconciles first — it never blindly re-executes just because the prior attempt's outcome was never recorded.
   - **Concurrency**: callers using the *same* operation identity are coordinated via a session-scoped Postgres advisory lock held on one dedicated connection for the whole pass, so one in-flight identity consumes exactly one pool connection. A crashed process cannot leave a permanent lock — Postgres releases it when the connection dies. *Different* identities never serialize against each other.
-  - A custom `EffectStore` implementation must provide the same same-identity coordination to be safe for concurrent use.
+  - **Fencing**: the lock is also released if only the connection dies while `execute()` is still running. Every write is therefore version-checked, so a pass that lost its lock can never overwrite another pass's record, and recovery never turns "not observed yet" into an immediate retry while that request could still land.
+  - A custom `EffectStore` implementation must provide the same same-identity coordination and version-checked writes to be safe for concurrent use.
+  - **One clock**: whether a timed-out request's window has passed is judged by the database server's clock, so clock skew between your hosts doesn't shift it.
+  - **Upgrading from 0.2.x**: drain 0.2.x workers first, then run `PostgresStore.migrate(pool)` once; it adds a `version` column in place. See [upgrade notes](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
 
 See [`docs/v0.1-spec.md`](docs/v0.1-spec.md#i1-concurrency-two-callers-the-same-operation-identity) for the precise wording of what this does and doesn't guarantee.
 
@@ -194,6 +197,7 @@ Precisely:
 - corrobo does **not** guarantee exactly-once execution against any third-party system it doesn't control. It guarantees that its own recorded decision (`COMPLETE`/`RETRY`/`REPLAN`/`REVIEW`/`INVESTIGATE`) is derived only from real evidence, never invented.
 - corrobo cannot create authoritative evidence where none exists. If `observe()` fails or is genuinely ambiguous, the honest answer is `UNKNOWN` → `INVESTIGATE`, not a guess — this is a correct, expected outcome, not a bug to engineer away.
 - `PENDING` means "observe again later," never "execute again" — re-execution never happens just because convergence is incomplete.
+- A timed-out request is not assumed dead: a `NOT_APPLIED` observed after a transport failure only allows a retry once the contract's declared `maxInFlightMs` has passed, and corrobo re-observes before retrying. That bound is yours to declare honestly; corrobo cannot verify it.
 - Whether a retry is safe is entirely a function of the operation's own declared semantics (`retryPolicy.retryOnNotApplied`) — corrobo enforces the policy a contract declares, it does not infer safety on its own.
 - Not a polling/orchestration engine: `PENDING` is modeled and re-observable, but corrobo does not schedule *when* you call `run()` again.
 

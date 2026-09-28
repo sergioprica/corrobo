@@ -1,5 +1,45 @@
+import { StoreConflictError } from "../core/store";
 import type { CoordinatedStore, EffectStore, NewOperationInput, OperationLock } from "../core/store";
 import type { AttemptRecord, OperationRecord, OperationStatus, ReservedAttemptInput } from "../core/types";
+
+/**
+ * Deep-copies a record so callers can never mutate stored state (and vice versa), except for
+ * `error.raw` on transport/observation errors: that is the caller's own thrown value, passed
+ * through as-is, and may be something structuredClone cannot copy (a function, a class
+ * instance holding one, ...). It is shared by reference rather than letting one odd thrown
+ * value make the whole record uncloneable.
+ */
+function cloneRecord(record: OperationRecord): OperationRecord {
+  const raws: unknown[] = [];
+  const stash = <E extends { message: string; raw?: unknown }>(error: E): E => {
+    if (!("raw" in error)) return error;
+    raws.push(error.raw);
+    return { ...error, raw: raws.length - 1 };
+  };
+  const withoutRaw: OperationRecord = {
+    ...record,
+    attempts: record.attempts.map((attempt) => {
+      if (attempt.status !== "RESOLVED") return attempt;
+      return {
+        ...attempt,
+        transport: attempt.transport.ok ? attempt.transport : { ok: false, error: stash(attempt.transport.error) },
+        observations: attempt.observations.map((o) =>
+          o.status === "observation_failed" ? { ...o, error: stash(o.error) } : o
+        )
+      };
+    })
+  };
+  const copy = structuredClone(withoutRaw);
+  const restore = (error: { message: string; raw?: unknown }) => {
+    if ("raw" in error) error.raw = raws[error.raw as number];
+  };
+  for (const attempt of copy.attempts) {
+    if (attempt.status !== "RESOLVED") continue;
+    if (!attempt.transport.ok) restore(attempt.transport.error);
+    for (const o of attempt.observations) if (o.status === "observation_failed") restore(o.error);
+  }
+  return copy;
+}
 
 /**
  * In-memory store for tests, examples, and quick local development.
@@ -37,12 +77,13 @@ export class InMemoryStore implements EffectStore {
 
   async getOperation(identityId: string): Promise<OperationRecord | null> {
     const record = this.records.get(identityId);
-    return record ? structuredClone(record) : null;
+    return record ? cloneRecord(record) : null;
   }
 
   async createOperation(input: NewOperationInput): Promise<OperationRecord> {
-    if (this.records.has(input.identity.id)) {
-      throw new Error(`corrobo: operation identity "${input.identity.id}" already exists`);
+    const existing = this.records.get(input.identity.id);
+    if (existing) {
+      throw new StoreConflictError(input.identity.id, null, existing.version);
     }
     const now = new Date().toISOString();
     const record: OperationRecord = {
@@ -52,52 +93,82 @@ export class InMemoryStore implements EffectStore {
       reviewReason: input.reviewReason,
       attempts: [],
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      version: 0
     };
-    this.records.set(input.identity.id, record);
-    return structuredClone(record);
+    this.records.set(input.identity.id, cloneRecord(record));
+    return cloneRecord(record);
   }
 
-  async reserveAttempt(identityId: string, reserved: ReservedAttemptInput): Promise<OperationRecord> {
-    const record = this.mustGet(identityId);
-    record.attempts.push({
-      status: "RESERVED",
-      attemptNumber: reserved.attemptNumber,
-      startedAt: reserved.startedAt,
-      updatedAt: reserved.startedAt
+  async reserveAttempt(
+    identityId: string,
+    reserved: ReservedAttemptInput,
+    expectedVersion: number
+  ): Promise<OperationRecord> {
+    return this.write(identityId, expectedVersion, (record) => {
+      record.attempts.push({
+        status: "RESERVED",
+        attemptNumber: reserved.attemptNumber,
+        startedAt: reserved.startedAt,
+        updatedAt: reserved.startedAt
+      });
     });
-    record.updatedAt = new Date().toISOString();
-    return structuredClone(record);
   }
 
-  async appendAttempt(identityId: string, attempt: AttemptRecord, status: OperationStatus): Promise<OperationRecord> {
-    const record = this.mustGet(identityId);
-    record.attempts.push(attempt);
-    record.status = status;
-    record.updatedAt = new Date().toISOString();
-    return structuredClone(record);
+  async appendAttempt(
+    identityId: string,
+    attempt: AttemptRecord,
+    status: OperationStatus,
+    expectedVersion: number
+  ): Promise<OperationRecord> {
+    return this.write(identityId, expectedVersion, (record) => {
+      record.attempts.push(attempt);
+      record.status = status;
+    });
   }
 
   async updateLatestAttempt(
     identityId: string,
     attempt: AttemptRecord,
-    status: OperationStatus
+    status: OperationStatus,
+    expectedVersion: number
   ): Promise<OperationRecord> {
-    const record = this.mustGet(identityId);
-    if (record.attempts.length === 0) {
-      throw new Error(`corrobo: no attempt to update for operation "${identityId}"`);
-    }
-    record.attempts[record.attempts.length - 1] = attempt;
-    record.status = status;
-    record.updatedAt = new Date().toISOString();
-    return structuredClone(record);
+    return this.write(identityId, expectedVersion, (record) => {
+      if (record.attempts.length === 0) {
+        throw new Error(`corrobo: no attempt to update for operation "${identityId}"`);
+      }
+      record.attempts[record.attempts.length - 1] = attempt;
+      record.status = status;
+    });
   }
 
-  async setStatus(identityId: string, status: OperationStatus): Promise<OperationRecord> {
-    const record = this.mustGet(identityId);
-    record.status = status;
-    record.updatedAt = new Date().toISOString();
-    return structuredClone(record);
+  async setStatus(identityId: string, status: OperationStatus, expectedVersion: number): Promise<OperationRecord> {
+    return this.write(identityId, expectedVersion, (record) => {
+      record.status = status;
+    });
+  }
+
+  /**
+   * Version-checked write: applies `change` to a copy and stores it only if everything
+   * succeeded, so a failed write (conflict, missing attempt, uncloneable value) leaves the
+   * stored record exactly as it was.
+   */
+  private write(
+    identityId: string,
+    expectedVersion: number,
+    change: (record: OperationRecord) => void
+  ): OperationRecord {
+    const current = this.mustGet(identityId);
+    if (current.version !== expectedVersion) {
+      throw new StoreConflictError(identityId, expectedVersion, current.version);
+    }
+    const next = cloneRecord(current);
+    change(next);
+    next.updatedAt = new Date().toISOString();
+    next.version = current.version + 1;
+    const stored = cloneRecord(next);
+    this.records.set(identityId, stored);
+    return cloneRecord(stored);
   }
 
   private mustGet(identityId: string): OperationRecord {

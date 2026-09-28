@@ -22,7 +22,9 @@ async function main(): Promise<void> {
   });
   log("normal success -> APPLIED / COMPLETE", { evidenceState: r1.evidenceState, disposition: r1.disposition });
 
-  // 2. Timeout BEFORE the write reaches the server -> NOT_APPLIED -> RETRY, then a real retry succeeds.
+  // 2. Timeout BEFORE the write reaches the server -> NOT_APPLIED -> RETRY, but not before the
+  //    failed request's in-flight window (maxInFlightMs) has passed: until then "not cancelled
+  //    yet" can't rule out a late landing. After it, corrobo re-observes, then retries.
   server.seed("order-2", { status: "open", version: 1 });
   const timeoutBefore = createCancelOrderContract({
     baseUrl: server.url,
@@ -31,10 +33,18 @@ async function main(): Promise<void> {
   const identity2 = { id: "op-timeout-before", operationType: timeoutBefore.operationType };
   const intent2 = { orderId: "order-2", expectedVersion: 1 };
   const r2a = await runEffect(store, timeoutBefore, { identity: identity2, intent: intent2 });
-  log("timeout before write, attempt 1 -> NOT_APPLIED / RETRY", { evidenceState: r2a.evidenceState, disposition: r2a.disposition });
+  log("timeout before write, attempt 1 -> NOT_APPLIED / RETRY after the in-flight window", {
+    evidenceState: r2a.evidenceState,
+    disposition: r2a.disposition,
+    retryNotBefore: r2a.retryNotBefore
+  });
+  await waitUntil(r2a.retryNotBefore);
   const r2b = await runEffect(store, timeoutBefore, { identity: identity2, intent: intent2 });
   log("caller retries, attempt 2 -> APPLIED / COMPLETE", { evidenceState: r2b.evidenceState, disposition: r2b.disposition });
-  console.log(`order-2 received exactly ${server.requestCount("order-2")} cancel-affecting requests (1 GET-less POST count incl. retry)`);
+  console.log(
+    `order-2: version ${server.getState("order-2")?.version} (cancelled exactly once); ` +
+      `${server.requestCount("order-2")} HTTP requests in total, reads included`
+  );
 
   // 3. Timeout AFTER the write committed -> the mutation still happened, but the response was lost.
   //    Headline proof: disposition is COMPLETE on attempt 1, no duplicate attempt occurs.
@@ -101,3 +111,7 @@ main().catch((err) => {
   console.error(err);
   process.exitCode = 1;
 });
+
+async function waitUntil(iso: string | null): Promise<void> {
+  if (iso) await new Promise((resolve) => setTimeout(resolve, Math.max(0, Date.parse(iso) - Date.now()) + 10));
+}

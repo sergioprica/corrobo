@@ -61,6 +61,10 @@ export function createRefundContract(options: {
       convergence: true
     },
     retryPolicy: { maxAttempts: 3, retryOnNotApplied: true },
+    // Every attempt sends the same Idempotency-Key (derived from the operation identity), so if a
+    // failed request lands late, a retry is deduplicated by Stripe instead of refunding twice.
+    // That is what makes 0 honest here. (Past Stripe's ~24h key retention it would not be.)
+    maxInFlightMs: 0,
 
     authorize(intent) {
       if (intent.amountCents >= reviewThresholdCents) {

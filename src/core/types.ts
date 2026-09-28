@@ -116,6 +116,22 @@ export interface EffectContract<Intent, Observation, Evidence> {
    * two meaningfully-equal intents as different, for this operation type.
    */
   fingerprintIntent?(intent: Intent): string;
+  /**
+   * Upper bound, in milliseconds, on how long after an attempt starts its effect could still
+   * land at the external system — at least your execute() client timeout plus any
+   * provider-side processing delay. Consulted only when evidence is NOT_APPLIED but execute()
+   * failed at the transport level (or its outcome was never recorded because the process
+   * died): a timed-out request may still be in flight, so an immediate "not applied"
+   * observation does not yet prove it never will be.
+   *
+   * - Omitted: that case resolves to INVESTIGATE, never an automatic RETRY.
+   * - Set: RETRY is allowed, but not before `attemptStartedAt + maxInFlightMs`; the next
+   *   runEffect() after that point re-observes first (catching a late landing) before
+   *   executing again.
+   * - `0`: only honest when re-executing is deduplicated by the provider (e.g. an idempotency
+   *   key that stays the same across attempts) or the request provably never left the process.
+   */
+  maxInFlightMs?: number;
 }
 
 /** An attempt whose outcome is not yet known — persisted BEFORE execute() is ever called. */
@@ -142,6 +158,12 @@ export interface ResolvedAttempt {
   disposition: RecoveryDisposition | null;
   /** Why that disposition was chosen (from decideDisposition()). */
   dispositionReason: ReasonCode;
+  /**
+   * Set only with disposition RETRY when the NOT_APPLIED evidence was observed while the
+   * failed execute() could still have been in flight (see EffectContract.maxInFlightMs).
+   * runEffect() will not execute again before this time, and re-observes first after it.
+   */
+  retryNotBefore?: string;
 }
 
 /**
@@ -168,6 +190,12 @@ export interface OperationRecord {
   attempts: AttemptRecord[];
   createdAt: string;
   updatedAt: string;
+  /**
+   * Optimistic-concurrency version: 0 when created, +1 on every successful write. Every store
+   * write must name the version it read (see CoordinatedStore), so a caller whose lock was
+   * lost mid-pass can never overwrite what another caller has since recorded.
+   */
+  version: number;
 }
 
 export interface EffectRequest<Intent> {
@@ -186,4 +214,6 @@ export interface EffectResult<Observation> {
   dispositionReason: ReasonCode;
   observation: ObservationResult<Observation> | null;
   attempts: AttemptRecord[];
+  /** Earliest time a RETRY may proceed (see ResolvedAttempt.retryNotBefore); null otherwise. */
+  retryNotBefore: string | null;
 }

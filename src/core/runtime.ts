@@ -1,11 +1,14 @@
 import { decideDisposition } from "./disposition";
+import type { DecideDispositionResult } from "./disposition";
 import { fingerprintIntent } from "./fingerprint";
+import { StoreConflictError } from "./store";
 import type { CoordinatedStore, EffectStore } from "./store";
 import type {
   AttemptRecord,
   EffectContract,
   EffectRequest,
   EffectResult,
+  EvidenceState,
   ObservationResult,
   OperationRecord,
   OperationStatus,
@@ -17,6 +20,14 @@ import type {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/**
+ * The clock for safety-relevant times (attempt start, in-flight window checks): the store's
+ * shared clock when it has one, otherwise this process's. See CoordinatedStore.now.
+ */
+async function safetyNow(store: CoordinatedStore): Promise<string> {
+  return store.now ? (await store.now()).toISOString() : nowIso();
 }
 
 function errorMessage(err: unknown): string {
@@ -45,7 +56,8 @@ function resultForInProgress<Observation>(identity: OperationRecord["identity"])
       summary: "Another caller is currently executing this operation. Call run() again shortly for a result."
     },
     observation: null,
-    attempts: []
+    attempts: [],
+    retryNotBefore: null
   };
 }
 
@@ -132,7 +144,8 @@ function resultFromRecord<Observation>(record: OperationRecord): EffectResult<Ob
       evidenceReason: null,
       dispositionReason,
       observation: null,
-      attempts: record.attempts
+      attempts: record.attempts,
+      retryNotBefore: null
     };
   }
 
@@ -148,7 +161,8 @@ function resultFromRecord<Observation>(record: OperationRecord): EffectResult<Ob
         summary: "An attempt has been reserved but not yet resolved. Call run() again shortly for a result."
       },
       observation: null,
-      attempts: record.attempts
+      attempts: record.attempts,
+      retryNotBefore: null
     };
   }
 
@@ -161,21 +175,67 @@ function resultFromRecord<Observation>(record: OperationRecord): EffectResult<Ob
     evidenceReason: latest.evidenceReason,
     dispositionReason: latest.dispositionReason,
     observation: latestObservation as ObservationResult<Observation> | null,
-    attempts: record.attempts
+    attempts: record.attempts,
+    retryNotBefore: latest.retryNotBefore ?? null
   };
 }
 
-function resolvedFrom(
-  reserved: Pick<ReservedAttempt | ResolvedAttempt, "attemptNumber" | "startedAt">,
-  fields: Omit<ResolvedAttempt, "status" | "attemptNumber" | "startedAt" | "updatedAt">
+function decide(
+  contract: EffectContract<unknown, unknown, unknown>,
+  evidenceState: EvidenceState,
+  attemptNumber: number,
+  transport: TransportOutcome<unknown>,
+  attemptStartedAt: string,
+  now: string
+): DecideDispositionResult {
+  return decideDisposition({
+    evidenceState,
+    attemptNumber,
+    retryPolicy: contract.retryPolicy,
+    settlement: {
+      transportOk: transport.ok,
+      attemptStartedAt,
+      now,
+      maxInFlightMs: contract.maxInFlightMs
+    }
+  });
+}
+
+/** OPEN while something further is expected (a retry, or convergence); CLOSED otherwise. */
+function statusAfter(evidenceState: EvidenceState, disposition: ResolvedAttempt["disposition"]): OperationStatus {
+  return disposition === "RETRY" || evidenceState === "PENDING" ? "OPEN" : "CLOSED";
+}
+
+/**
+ * Builds the resolved form of an attempt from one observation. `previous` carries earlier
+ * observations when an already-resolved attempt is re-observed (PENDING, or a settlement check
+ * before a delayed retry); its old retryNotBefore is deliberately not carried over.
+ */
+function resolveAttempt(
+  contract: EffectContract<unknown, unknown, unknown>,
+  base: { attemptNumber: number; startedAt: string },
+  transport: TransportOutcome<unknown>,
+  observations: ObservationResult<unknown>[],
+  reconciliation: { evidenceState: EvidenceState; reason: ReasonCode },
+  now: string
 ): ResolvedAttempt {
-  return {
+  const decision = decide(contract, reconciliation.evidenceState, base.attemptNumber, transport, base.startedAt, now);
+  const attempt: ResolvedAttempt = {
     status: "RESOLVED",
-    attemptNumber: reserved.attemptNumber,
-    startedAt: reserved.startedAt,
+    attemptNumber: base.attemptNumber,
+    startedAt: base.startedAt,
     updatedAt: nowIso(),
-    ...fields
+    transport,
+    observations,
+    evidenceState: reconciliation.evidenceState,
+    evidenceReason: reconciliation.reason,
+    disposition: decision.disposition,
+    dispositionReason: decision.reason
   };
+  if (decision.retryNotBefore) {
+    attempt.retryNotBefore = decision.retryNotBefore;
+  }
+  return attempt;
 }
 
 /**
@@ -183,6 +243,10 @@ function resolvedFrom(
  * BEFORE execute() is called, specifically so a crash between a successful execute() and this
  * function's final persist can never be mistaken, on restart, for "never attempted" — see
  * recoverReservedAttempt below, which is what actually runs in that case.
+ *
+ * Both writes are version-checked: if another pass wrote to this operation in between (this
+ * pass's lock was lost), the reservation or the final resolve throws StoreConflictError and
+ * nothing of this pass's is persisted over the other's (see runEffect).
  */
 async function performAttempt<Intent, Observation, Evidence>(
   store: CoordinatedStore,
@@ -191,45 +255,40 @@ async function performAttempt<Intent, Observation, Evidence>(
   intent: Intent
 ): Promise<EffectResult<Observation>> {
   const attemptNumber = record.attempts.length + 1;
-  const startedAt = nowIso();
+  const startedAt = await safetyNow(store);
 
-  await store.reserveAttempt(record.identity.id, { attemptNumber, startedAt });
+  const reservedRecord = await store.reserveAttempt(record.identity.id, { attemptNumber, startedAt }, record.version);
 
   const transport = await safeExecute(contract, intent, record.identity, attemptNumber);
   const observation = await safeObserve(contract, intent, record.identity, transport, startedAt);
   const reconciliation = contract.reconcile({ intent, transport, observation });
-  const { disposition, reason: dispositionReason } = decideDisposition({
-    evidenceState: reconciliation.evidenceState,
-    attemptNumber,
-    retryPolicy: contract.retryPolicy
-  });
 
-  const attempt = resolvedFrom(
+  const attempt = resolveAttempt(
+    contract as EffectContract<unknown, unknown, unknown>,
     { attemptNumber, startedAt },
-    {
-      transport: transport as TransportOutcome<unknown>,
-      observations: [observation as ObservationResult<unknown>],
-      evidenceState: reconciliation.evidenceState,
-      evidenceReason: reconciliation.reason,
-      disposition,
-      dispositionReason
-    }
+    transport as TransportOutcome<unknown>,
+    [observation as ObservationResult<unknown>],
+    reconciliation,
+    await safetyNow(store)
   );
-
-  const nextStatus: OperationStatus =
-    disposition === "RETRY" || reconciliation.evidenceState === "PENDING" ? "OPEN" : "CLOSED";
-
-  const updated = await store.updateLatestAttempt(record.identity.id, attempt, nextStatus);
+  const updated = await store.updateLatestAttempt(
+    record.identity.id,
+    attempt,
+    statusAfter(attempt.evidenceState, attempt.disposition),
+    reservedRecord.version
+  );
   return resultFromRecord(updated);
 }
 
 /**
  * Restart-time recovery for an attempt that was reserved but never resolved (the process died
- * somewhere between execute() being called and the outcome being persisted). Never calls
- * execute() again here — goes straight to observe()/reconcile() using an honest "transport
- * outcome unknown" value, exactly the same ok:false shape used for a genuine execute() throw.
- * This is not fabricated evidence: it truthfully states that execute()'s outcome was never
- * recorded, which is all corrobo actually knows at this point.
+ * — or lost its lock — somewhere between execute() being called and the outcome being
+ * persisted). Never calls execute() again here — goes straight to observe()/reconcile() using
+ * an honest "transport outcome unknown" value, exactly the same ok:false shape used for a
+ * genuine execute() throw. Because the transport outcome is unknown, the original request may
+ * still be in flight, so a NOT_APPLIED observation is subject to the same settlement rule as a
+ * timed-out execute() (see EffectContract.maxInFlightMs): it never becomes an immediate RETRY
+ * unless the in-flight window has already passed.
  */
 async function recoverReservedAttempt<Intent, Observation, Evidence>(
   store: CoordinatedStore,
@@ -249,32 +308,29 @@ async function recoverReservedAttempt<Intent, Observation, Evidence>(
 
   const observation = await safeObserve(contract, intent, record.identity, transport, reserved.startedAt);
   const reconciliation = contract.reconcile({ intent, transport, observation });
-  const { disposition, reason: dispositionReason } = decideDisposition({
-    evidenceState: reconciliation.evidenceState,
-    attemptNumber: reserved.attemptNumber,
-    retryPolicy: contract.retryPolicy
-  });
 
-  const attempt = resolvedFrom(reserved, {
-    transport: transport as TransportOutcome<unknown>,
-    observations: [observation as ObservationResult<unknown>],
-    evidenceState: reconciliation.evidenceState,
-    evidenceReason: reconciliation.reason,
-    disposition,
-    dispositionReason
-  });
-
-  const nextStatus: OperationStatus =
-    disposition === "RETRY" || reconciliation.evidenceState === "PENDING" ? "OPEN" : "CLOSED";
-
-  const updated = await store.updateLatestAttempt(record.identity.id, attempt, nextStatus);
+  const attempt = resolveAttempt(
+    contract as EffectContract<unknown, unknown, unknown>,
+    reserved,
+    transport as TransportOutcome<unknown>,
+    [observation as ObservationResult<unknown>],
+    reconciliation,
+    await safetyNow(store)
+  );
+  const updated = await store.updateLatestAttempt(
+    record.identity.id,
+    attempt,
+    statusAfter(attempt.evidenceState, attempt.disposition),
+    record.version
+  );
   return resultFromRecord(updated);
 }
 
 /**
- * Re-observes a PENDING operation WITHOUT re-executing the underlying mutation.
- * Calling run() again for an operation whose latest evidence state is PENDING
- * takes this path, never performAttempt.
+ * Re-observes the latest, already-resolved attempt WITHOUT re-executing the mutation, and
+ * re-decides from the new observation. Used for PENDING (awaiting convergence) and for the
+ * settlement check that precedes a delayed RETRY (catching a late landing before a new
+ * attempt). Returns the persisted record so the caller can continue from it.
  */
 async function reObserve<Intent, Observation, Evidence>(
   store: CoordinatedStore,
@@ -282,31 +338,25 @@ async function reObserve<Intent, Observation, Evidence>(
   record: OperationRecord,
   intent: Intent,
   latest: ResolvedAttempt
-): Promise<EffectResult<Observation>> {
+): Promise<OperationRecord> {
   const transport = latest.transport as TransportOutcome<Evidence>;
   const observation = await safeObserve(contract, intent, record.identity, transport, latest.startedAt);
   const reconciliation = contract.reconcile({ intent, transport, observation });
-  const { disposition, reason: dispositionReason } = decideDisposition({
-    evidenceState: reconciliation.evidenceState,
-    attemptNumber: latest.attemptNumber,
-    retryPolicy: contract.retryPolicy
-  });
 
-  const updatedAttempt: ResolvedAttempt = {
-    ...latest,
-    updatedAt: nowIso(),
-    observations: [...latest.observations, observation as ObservationResult<unknown>],
-    evidenceState: reconciliation.evidenceState,
-    evidenceReason: reconciliation.reason,
-    disposition,
-    dispositionReason
-  };
-
-  const nextStatus: OperationStatus =
-    disposition === "RETRY" || reconciliation.evidenceState === "PENDING" ? "OPEN" : "CLOSED";
-
-  const updated = await store.updateLatestAttempt(record.identity.id, updatedAttempt, nextStatus);
-  return resultFromRecord(updated);
+  const attempt = resolveAttempt(
+    contract as EffectContract<unknown, unknown, unknown>,
+    latest,
+    latest.transport,
+    [...latest.observations, observation as ObservationResult<unknown>],
+    reconciliation,
+    await safetyNow(store)
+  );
+  return store.updateLatestAttempt(
+    record.identity.id,
+    attempt,
+    statusAfter(attempt.evidenceState, attempt.disposition),
+    record.version
+  );
 }
 
 /**
@@ -337,6 +387,20 @@ export async function runEffect<Intent, Observation, Evidence>(
   }
   try {
     return await runCoordinated(lock.store, contract, request);
+  } catch (err) {
+    if (!(err instanceof StoreConflictError)) {
+      throw err;
+    }
+    // Another pass wrote to this operation after this one read it — this pass's lock was lost
+    // (e.g. its database session died mid-execute). Its own pending write was rejected, not
+    // applied; report what is actually recorded now instead of guessing.
+    // Re-read through the outer store: the lock's own connection may be the thing that died.
+    const current = await store.getOperation(request.identity.id);
+    if (!current) {
+      throw err;
+    }
+    assertSameLogicalOperation(contract, request, current);
+    return resultFromRecord(current);
   } finally {
     await lock.release();
   }
@@ -375,13 +439,13 @@ async function runCoordinated<Intent, Observation, Evidence>(
 
   if (existing.status === "AWAITING_REVIEW") {
     if (request.reviewDecision === "rejected") {
-      const closed = await store.setStatus(existing.identity.id, "CLOSED");
+      const closed = await store.setStatus(existing.identity.id, "CLOSED", existing.version);
       return resultFromRecord(closed);
     }
     if (request.reviewDecision !== "approved") {
       return resultFromRecord(existing);
     }
-    const reopened = await store.setStatus(existing.identity.id, "OPEN");
+    const reopened = await store.setStatus(existing.identity.id, "OPEN", existing.version);
     return await performAttempt(store, contract, reopened, request.intent);
   }
 
@@ -396,11 +460,33 @@ async function runCoordinated<Intent, Observation, Evidence>(
   }
 
   if (latest.evidenceState === "PENDING") {
-    return await reObserve(store, contract, existing, request.intent, latest);
+    return resultFromRecord(await reObserve(store, contract, existing, request.intent, latest));
   }
 
   if (latest.disposition === "RETRY") {
-    return await performAttempt(store, contract, existing, request.intent);
+    if (latest.transport.ok) {
+      // execute() returned a response: that request is finished, the NOT_APPLIED was final.
+      return await performAttempt(store, contract, existing, request.intent);
+    }
+    // The failed request could still land. Nothing happens before retryNotBefore.
+    if (latest.retryNotBefore && Date.parse(await safetyNow(store)) < Date.parse(latest.retryNotBefore)) {
+      return resultFromRecord(existing);
+    }
+    // Settlement check: observe again and re-decide under the current rules before any new
+    // attempt. A late landing shows up here as APPLIED (→ COMPLETE, no new attempt). This also
+    // covers RETRYs recorded without a settlement window (e.g. by corrobo 0.2.x): with no
+    // maxInFlightMs they now become INVESTIGATE instead of executing.
+    const settled = await reObserve(store, contract, existing, request.intent, latest);
+    const settledLatest = settled.attempts[settled.attempts.length - 1];
+    if (
+      settled.status === "OPEN" &&
+      settledLatest?.status === "RESOLVED" &&
+      settledLatest.disposition === "RETRY" &&
+      !settledLatest.retryNotBefore
+    ) {
+      return await performAttempt(store, contract, settled, request.intent);
+    }
+    return resultFromRecord(settled);
   }
 
   // OPEN with a resolved latest attempt that is neither PENDING nor RETRY shouldn't occur
