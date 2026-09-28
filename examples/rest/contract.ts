@@ -24,9 +24,18 @@ export interface OrderObservation {
   version: number;
 }
 
+/** Client-side bound on one cancel request. A request that times out is abandoned, not undone. */
+const REQUEST_TIMEOUT_MS = 200;
+/**
+ * How long this example server can take to apply a request it has already received (it applies
+ * synchronously on receipt). A real API needs a real number here — ask the provider or measure it.
+ */
+const SERVER_APPLY_BOUND_MS = 50;
+
 async function callCancel(baseUrl: string, intent: CancelOrderIntent): Promise<CancelTransportEvidence> {
   const res = await fetch(`${baseUrl}/orders/${intent.orderId}/cancel`, {
     method: "POST",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ expectedVersion: intent.expectedVersion, convergeAsync: intent.convergeAsync ?? false })
   });
@@ -56,6 +65,10 @@ export function createCancelOrderContract(options: {
       convergence: true
     },
     retryPolicy: { maxAttempts: 3, retryOnNotApplied: true },
+    // A cancel that failed at the transport level could still be applied until its request
+    // times out and the server has had time to finish applying anything it already received.
+    // Until then, "not cancelled yet" is not proof it never will be, so a retry waits.
+    maxInFlightMs: REQUEST_TIMEOUT_MS + SERVER_APPLY_BOUND_MS,
 
     async execute({ intent, attemptNumber }) {
       lastAttemptNumber = attemptNumber;

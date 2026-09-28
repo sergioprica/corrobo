@@ -56,7 +56,7 @@ describe("InMemoryStore", () => {
   it("appends attempts and updates status", async () => {
     const store = new InMemoryStore();
     await store.createOperation({ identity: { id: "b", operationType: "t" }, intent: {}, status: "OPEN" });
-    const updated = await store.appendAttempt("b", sampleAttempt(), "CLOSED");
+    const updated = await store.appendAttempt("b", sampleAttempt(), "CLOSED", 0);
     expect(updated.attempts).toHaveLength(1);
     expect(updated.status).toBe("CLOSED");
   });
@@ -64,8 +64,8 @@ describe("InMemoryStore", () => {
   it("updateLatestAttempt replaces only the last attempt", async () => {
     const store = new InMemoryStore();
     await store.createOperation({ identity: { id: "c", operationType: "t" }, intent: {}, status: "OPEN" });
-    await store.appendAttempt("c", sampleAttempt({ evidenceState: "PENDING", disposition: null }), "OPEN");
-    const resolved = await store.updateLatestAttempt("c", sampleAttempt({ evidenceState: "APPLIED", disposition: "COMPLETE" }), "CLOSED");
+    await store.appendAttempt("c", sampleAttempt({ evidenceState: "PENDING", disposition: null }), "OPEN", 0);
+    const resolved = await store.updateLatestAttempt("c", sampleAttempt({ evidenceState: "APPLIED", disposition: "COMPLETE" }), "CLOSED", 1);
     expect(resolved.attempts).toHaveLength(1);
     expect(asResolved(resolved.attempts[0]).evidenceState).toBe("APPLIED");
     expect(resolved.status).toBe("CLOSED");
@@ -74,11 +74,11 @@ describe("InMemoryStore", () => {
   it("reserveAttempt persists a RESERVED attempt before any outcome is known", async () => {
     const store = new InMemoryStore();
     await store.createOperation({ identity: { id: "e", operationType: "t" }, intent: {}, status: "OPEN" });
-    const reserved = await store.reserveAttempt("e", { attemptNumber: 1, startedAt: nowIso() });
+    const reserved = await store.reserveAttempt("e", { attemptNumber: 1, startedAt: nowIso() }, 0);
     expect(reserved.attempts).toHaveLength(1);
     expect(reserved.attempts[0].status).toBe("RESERVED");
 
-    const resolved = await store.updateLatestAttempt("e", sampleAttempt(), "CLOSED");
+    const resolved = await store.updateLatestAttempt("e", sampleAttempt(), "CLOSED", 1);
     expect(resolved.attempts).toHaveLength(1);
     expect(asResolved(resolved.attempts[0]).evidenceState).toBe("APPLIED");
   });

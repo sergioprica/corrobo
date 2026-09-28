@@ -62,8 +62,15 @@ describe("generic REST example: cancel order", () => {
     const r1 = await runEffect(store, contract, { identity, intent });
     expect(r1.evidenceState).toBe("NOT_APPLIED");
     expect(r1.disposition).toBe("RETRY");
+    expect(r1.retryNotBefore).not.toBeNull(); // the failed request could still land until then
     expect(server.getState("o3")?.status).toBe("open");
 
+    // Too early: no new attempt is made while the failed request could still land.
+    const early = await runEffect(store, contract, { identity, intent });
+    expect(early.attempts).toHaveLength(1);
+    expect(server.getState("o3")?.version).toBe(1);
+
+    await new Promise((resolve) => setTimeout(resolve, Date.parse(r1.retryNotBefore!) - Date.now() + 10));
     const r2 = await runEffect(store, contract, { identity, intent });
     expect(r2.evidenceState).toBe("APPLIED");
     expect(r2.disposition).toBe("COMPLETE");

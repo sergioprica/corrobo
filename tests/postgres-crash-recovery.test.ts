@@ -30,9 +30,10 @@ describe.skipIf(!connectionString)("crash recovery: reserved-but-unresolved atte
     await poolA.end();
   });
 
-  function makeContract(external: { mutationCount: number; observationFails?: boolean }) {
+  function makeContract(external: { mutationCount: number; observationFails?: boolean }, maxInFlightMs?: number) {
     const contract: EffectContract<Record<string, never>, unknown, unknown> = {
       operationType: "test/crash-recovery",
+      maxInFlightMs,
       capabilities: {
         nativeIdempotency: false,
         callerGeneratedIdentity: true,
@@ -109,7 +110,7 @@ describe.skipIf(!connectionString)("crash recovery: reserved-but-unresolved atte
       [identity.id, identity.operationType]
     );
     const reserveStore = new PostgresStore(poolA, { acknowledgePersistence: true });
-    await reserveStore.reserveAttempt(identity.id, { attemptNumber: 1, startedAt: new Date().toISOString() });
+    await reserveStore.reserveAttempt(identity.id, { attemptNumber: 1, startedAt: new Date().toISOString() }, 0);
     external.mutationCount = 1; // the real effect already happened, corrobo just doesn't know it
 
     // "Restart": a fresh pool and store, exactly like a new process.
@@ -126,18 +127,43 @@ describe.skipIf(!connectionString)("crash recovery: reserved-but-unresolved atte
     await poolB.end();
   });
 
-  it("crash before the effect occurred: restart observes NOT_APPLIED and retry is allowed only per policy", async () => {
+  /** Seeds an operation whose attempt 1 was reserved at `startedAt` by a process that then died. */
+  async function seedReserved(id: string, operationType: string, startedAt: string) {
+    await poolA.query(
+      `INSERT INTO corrobo_operations (id, operation_type, intent, status, attempts) VALUES ($1, $2, '{}'::jsonb, 'OPEN', '[]'::jsonb)`,
+      [id, operationType]
+    );
+    const reserveStore = new PostgresStore(poolA, { acknowledgePersistence: true });
+    await reserveStore.reserveAttempt(id, { attemptNumber: 1, startedAt }, 0);
+  }
+
+  it("crash, then NOT_APPLIED, no maxInFlightMs: INVESTIGATE — the dead attempt could still land, so no automatic retry", async () => {
     const external = { mutationCount: 0 };
     const contract = makeContract(external);
     const identity = { id: "crash-not-applied-1", operationType: contract.operationType };
+    await seedReserved(identity.id, identity.operationType, new Date().toISOString());
 
-    await poolA.query(
-      `INSERT INTO corrobo_operations (id, operation_type, intent, status, attempts) VALUES ($1, $2, '{}'::jsonb, 'OPEN', '[]'::jsonb)`,
-      [identity.id, identity.operationType]
-    );
-    const reserveStore = new PostgresStore(poolA, { acknowledgePersistence: true });
-    await reserveStore.reserveAttempt(identity.id, { attemptNumber: 1, startedAt: new Date().toISOString() });
-    // external.mutationCount stays 0: the crash happened before execute() ever ran for real.
+    const poolB = new Pool({ connectionString });
+    const storeB = new PostgresStore(poolB, { acknowledgePersistence: true });
+
+    const result = await runEffect(storeB, contract, { identity, intent: {} });
+    expect(result.evidenceState).toBe("NOT_APPLIED");
+    expect(result.disposition).toBe("INVESTIGATE");
+    expect(result.dispositionReason.code).toBe("IN_FLIGHT_NOT_RULED_OUT");
+    expect(result.status).toBe("CLOSED");
+
+    const again = await runEffect(storeB, contract, { identity, intent: {} });
+    expect(again.disposition).toBe("INVESTIGATE");
+    expect(external.mutationCount).toBe(0); // execute() never called
+
+    await poolB.end();
+  });
+
+  it("crash, then NOT_APPLIED after the in-flight window has passed: RETRY per policy, and the retry executes once", async () => {
+    const external = { mutationCount: 0 };
+    const contract = makeContract(external, 1_000);
+    const identity = { id: "crash-not-applied-2", operationType: contract.operationType };
+    await seedReserved(identity.id, identity.operationType, new Date(Date.now() - 60_000).toISOString());
 
     const poolB = new Pool({ connectionString });
     const storeB = new PostgresStore(poolB, { acknowledgePersistence: true });
@@ -145,12 +171,44 @@ describe.skipIf(!connectionString)("crash recovery: reserved-but-unresolved atte
     const result = await runEffect(storeB, contract, { identity, intent: {} });
     expect(result.evidenceState).toBe("NOT_APPLIED");
     expect(result.disposition).toBe("RETRY");
+    expect(result.retryNotBefore).toBeNull();
     expect(external.mutationCount).toBe(0);
 
-    // A subsequent call is now a genuine, fresh attempt — allowed because retryOnNotApplied is true.
     const retried = await runEffect(storeB, contract, { identity, intent: {} });
     expect(retried.evidenceState).toBe("APPLIED");
     expect(retried.disposition).toBe("COMPLETE");
+    expect(external.mutationCount).toBe(1);
+
+    await poolB.end();
+  });
+
+  it("crash, then NOT_APPLIED inside the window, then the dead attempt lands late: caught by the settlement check, never re-executed", async () => {
+    const external = { mutationCount: 0 };
+    const contract = makeContract(external, 400);
+    const identity = { id: "crash-late-landing-1", operationType: contract.operationType };
+    await seedReserved(identity.id, identity.operationType, new Date(Date.now() - 100).toISOString());
+
+    const poolB = new Pool({ connectionString });
+    const storeB = new PostgresStore(poolB, { acknowledgePersistence: true });
+
+    const first = await runEffect(storeB, contract, { identity, intent: {} });
+    expect(first.evidenceState).toBe("NOT_APPLIED");
+    expect(first.disposition).toBe("RETRY");
+    expect(first.dispositionReason.code).toBe("SAFE_RETRY_AFTER_SETTLEMENT");
+    expect(first.retryNotBefore).not.toBeNull();
+
+    // Called again too early: nothing happens — no execute, and the record is unchanged.
+    const tooEarly = await runEffect(storeB, contract, { identity, intent: {} });
+    expect(tooEarly.retryNotBefore).toBe(first.retryNotBefore);
+    expect(tooEarly.attempts[0]).toEqual(first.attempts[0]);
+
+    external.mutationCount = 1; // the dead process's request lands at the provider, late
+    await new Promise((r) => setTimeout(r, Date.parse(first.retryNotBefore!) - Date.now() + 20));
+
+    const settled = await runEffect(storeB, contract, { identity, intent: {} });
+    expect(settled.evidenceState).toBe("APPLIED");
+    expect(settled.disposition).toBe("COMPLETE");
+    expect(settled.attempts).toHaveLength(1); // settlement re-observed attempt 1; no attempt 2
     expect(external.mutationCount).toBe(1);
 
     await poolB.end();
@@ -166,7 +224,7 @@ describe.skipIf(!connectionString)("crash recovery: reserved-but-unresolved atte
       [identity.id, identity.operationType]
     );
     const reserveStore = new PostgresStore(poolA, { acknowledgePersistence: true });
-    await reserveStore.reserveAttempt(identity.id, { attemptNumber: 1, startedAt: new Date().toISOString() });
+    await reserveStore.reserveAttempt(identity.id, { attemptNumber: 1, startedAt: new Date().toISOString() }, 0);
 
     const poolB = new Pool({ connectionString });
     const storeB = new PostgresStore(poolB, { acknowledgePersistence: true });
