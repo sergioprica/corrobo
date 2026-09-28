@@ -22,6 +22,14 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/**
+ * The clock for safety-relevant times (attempt start, in-flight window checks): the store's
+ * shared clock when it has one, otherwise this process's. See CoordinatedStore.now.
+ */
+async function safetyNow(store: CoordinatedStore): Promise<string> {
+  return store.now ? (await store.now()).toISOString() : nowIso();
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -177,7 +185,8 @@ function decide(
   evidenceState: EvidenceState,
   attemptNumber: number,
   transport: TransportOutcome<unknown>,
-  attemptStartedAt: string
+  attemptStartedAt: string,
+  now: string
 ): DecideDispositionResult {
   return decideDisposition({
     evidenceState,
@@ -186,7 +195,7 @@ function decide(
     settlement: {
       transportOk: transport.ok,
       attemptStartedAt,
-      now: nowIso(),
+      now,
       maxInFlightMs: contract.maxInFlightMs
     }
   });
@@ -207,9 +216,10 @@ function resolveAttempt(
   base: { attemptNumber: number; startedAt: string },
   transport: TransportOutcome<unknown>,
   observations: ObservationResult<unknown>[],
-  reconciliation: { evidenceState: EvidenceState; reason: ReasonCode }
+  reconciliation: { evidenceState: EvidenceState; reason: ReasonCode },
+  now: string
 ): ResolvedAttempt {
-  const decision = decide(contract, reconciliation.evidenceState, base.attemptNumber, transport, base.startedAt);
+  const decision = decide(contract, reconciliation.evidenceState, base.attemptNumber, transport, base.startedAt, now);
   const attempt: ResolvedAttempt = {
     status: "RESOLVED",
     attemptNumber: base.attemptNumber,
@@ -245,7 +255,7 @@ async function performAttempt<Intent, Observation, Evidence>(
   intent: Intent
 ): Promise<EffectResult<Observation>> {
   const attemptNumber = record.attempts.length + 1;
-  const startedAt = nowIso();
+  const startedAt = await safetyNow(store);
 
   const reservedRecord = await store.reserveAttempt(record.identity.id, { attemptNumber, startedAt }, record.version);
 
@@ -258,7 +268,8 @@ async function performAttempt<Intent, Observation, Evidence>(
     { attemptNumber, startedAt },
     transport as TransportOutcome<unknown>,
     [observation as ObservationResult<unknown>],
-    reconciliation
+    reconciliation,
+    await safetyNow(store)
   );
   const updated = await store.updateLatestAttempt(
     record.identity.id,
@@ -303,7 +314,8 @@ async function recoverReservedAttempt<Intent, Observation, Evidence>(
     reserved,
     transport as TransportOutcome<unknown>,
     [observation as ObservationResult<unknown>],
-    reconciliation
+    reconciliation,
+    await safetyNow(store)
   );
   const updated = await store.updateLatestAttempt(
     record.identity.id,
@@ -336,7 +348,8 @@ async function reObserve<Intent, Observation, Evidence>(
     latest,
     latest.transport,
     [...latest.observations, observation as ObservationResult<unknown>],
-    reconciliation
+    reconciliation,
+    await safetyNow(store)
   );
   return store.updateLatestAttempt(
     record.identity.id,
@@ -381,10 +394,12 @@ export async function runEffect<Intent, Observation, Evidence>(
     // Another pass wrote to this operation after this one read it — this pass's lock was lost
     // (e.g. its database session died mid-execute). Its own pending write was rejected, not
     // applied; report what is actually recorded now instead of guessing.
-    const current = await lock.store.getOperation(request.identity.id);
+    // Re-read through the outer store: the lock's own connection may be the thing that died.
+    const current = await store.getOperation(request.identity.id);
     if (!current) {
       throw err;
     }
+    assertSameLogicalOperation(contract, request, current);
     return resultFromRecord(current);
   } finally {
     await lock.release();
@@ -449,15 +464,18 @@ async function runCoordinated<Intent, Observation, Evidence>(
   }
 
   if (latest.disposition === "RETRY") {
-    if (!latest.retryNotBefore) {
+    if (latest.transport.ok) {
+      // execute() returned a response: that request is finished, the NOT_APPLIED was final.
       return await performAttempt(store, contract, existing, request.intent);
     }
-    // The NOT_APPLIED behind this RETRY was observed while the failed request could still land.
-    if (Date.now() < Date.parse(latest.retryNotBefore)) {
+    // The failed request could still land. Nothing happens before retryNotBefore.
+    if (latest.retryNotBefore && Date.parse(await safetyNow(store)) < Date.parse(latest.retryNotBefore)) {
       return resultFromRecord(existing);
     }
-    // Settlement check: observe once more now that the window has passed. A late landing shows
-    // up here as APPLIED (→ COMPLETE, no new attempt); only a settled NOT_APPLIED retries.
+    // Settlement check: observe again and re-decide under the current rules before any new
+    // attempt. A late landing shows up here as APPLIED (→ COMPLETE, no new attempt). This also
+    // covers RETRYs recorded without a settlement window (e.g. by corrobo 0.2.x): with no
+    // maxInFlightMs they now become INVESTIGATE instead of executing.
     const settled = await reObserve(store, contract, existing, request.intent, latest);
     const settledLatest = settled.attempts[settled.attempts.length - 1];
     if (

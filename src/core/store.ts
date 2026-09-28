@@ -83,6 +83,15 @@ export interface CoordinatedStore {
   ): Promise<OperationRecord>;
 
   setStatus(identityId: string, status: OperationStatus, expectedVersion: number): Promise<OperationRecord>;
+
+  /**
+   * Optional shared clock for time-based safety decisions: when an attempt started, and whether
+   * its in-flight window (EffectContract.maxInFlightMs) has passed. Those two readings may come
+   * from different processes on different hosts, so they must come from one clock; a store
+   * backed by a shared database should read the database's clock (PostgresStore does). When
+   * omitted, the local process clock is used — fine for a single host, not across hosts.
+   */
+  now?(): Promise<Date>;
 }
 
 export interface OperationLock {

@@ -200,3 +200,14 @@ describe("PostgresStore lock release", () => {
     expect(releaseArgs[0]).toBeInstanceOf(Error); // release(err) => pg destroys the client
   });
 });
+
+describe.skipIf(!connectionString)("PostgresStore clock", () => {
+  it("now() reads the database server's clock", async () => {
+    const pool = new Pool({ connectionString });
+    const store = new PostgresStore(pool, { acknowledgePersistence: true });
+    const dbNow = await store.now();
+    const serverNow = (await pool.query<{ t: Date }>("SELECT clock_timestamp() AS t")).rows[0].t;
+    expect(Math.abs(serverNow.getTime() - dbNow.getTime())).toBeLessThan(1_000);
+    await pool.end();
+  });
+});

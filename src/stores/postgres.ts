@@ -245,6 +245,12 @@ async function updateLatestAttemptImpl(
   );
 }
 
+/** The database server's clock — one clock for every process sharing this database. */
+async function nowImpl(q: Queryable): Promise<Date> {
+  const result = await q.query<{ now: Date }>("SELECT clock_timestamp() AS now");
+  return result.rows[0].now;
+}
+
 async function setStatusImpl(
   q: Queryable,
   identityId: string,
@@ -266,7 +272,8 @@ function boundStore(q: Queryable): CoordinatedStore {
     reserveAttempt: (id, r, v) => reserveAttemptImpl(q, id, r, v),
     appendAttempt: (id, a, s, v) => appendAttemptImpl(q, id, a, s, v),
     updateLatestAttempt: (id, a, s, v) => updateLatestAttemptImpl(q, id, a, s, v),
-    setStatus: (id, s, v) => setStatusImpl(q, id, s, v)
+    setStatus: (id, s, v) => setStatusImpl(q, id, s, v),
+    now: () => nowImpl(q)
   };
 }
 
@@ -401,5 +408,9 @@ export class PostgresStore implements EffectStore {
 
   setStatus(identityId: string, status: OperationStatus, expectedVersion: number): Promise<OperationRecord> {
     return setStatusImpl(this.pool, identityId, status, expectedVersion);
+  }
+
+  now(): Promise<Date> {
+    return nowImpl(this.pool);
   }
 }

@@ -356,3 +356,100 @@ describe("InMemoryStore and uncloneable thrown values", () => {
     expect(second.attempts).toHaveLength(2);
   });
 });
+
+describe("review fixes: legacy RETRY, one clock domain, identity binding on conflict", () => {
+  const identity = { id: "credit-3", operationType: "test/credit" };
+  const intent = { amount: 5 };
+
+  /** Writes the record corrobo 0.2.x left behind: a transport failure resolved straight to RETRY, no window. */
+  async function seedLegacyRetry(store: InMemoryStore, startedAt: string) {
+    await store.createOperation({ identity, intent, status: "OPEN" });
+    await store.reserveAttempt(identity.id, { attemptNumber: 1, startedAt }, 0);
+    const legacy: ResolvedAttempt = {
+      status: "RESOLVED",
+      attemptNumber: 1,
+      startedAt,
+      updatedAt: startedAt,
+      transport: { ok: false, error: { message: "timeout" } },
+      observations: [{ status: "observed", data: { applied: 0 }, authoritative: true, source: "target", observedAt: startedAt }],
+      evidenceState: "NOT_APPLIED",
+      evidenceReason: { code: "ABSENT", summary: "no credit" },
+      disposition: "RETRY",
+      dispositionReason: { code: "SAFE_RETRY", summary: "0.2.x" }
+    };
+    await store.updateLatestAttempt(identity.id, legacy, "OPEN", 1);
+  }
+
+  it("a 0.2.x RETRY after a transport failure, contract without maxInFlightMs: INVESTIGATE, never executed", async () => {
+    const store = new InMemoryStore();
+    const target = makeTarget();
+    await seedLegacyRetry(store, new Date().toISOString());
+
+    const result = await runEffect(store, contractFor(target), { identity, intent });
+    expect(result.disposition).toBe("INVESTIGATE");
+    expect(result.dispositionReason.code).toBe("IN_FLIGHT_NOT_RULED_OUT");
+    expect(target.executeCalls).toBe(0);
+  });
+
+  it("a 0.2.x RETRY whose request landed late: the settlement check finds APPLIED, no second effect", async () => {
+    const store = new InMemoryStore();
+    const target = makeTarget();
+    await seedLegacyRetry(store, new Date(Date.now() - 60_000).toISOString());
+    target.applied = 1;
+
+    const result = await runEffect(store, contractFor(target, 1_000), { identity, intent });
+    expect(result.evidenceState).toBe("APPLIED");
+    expect(target.executeCalls).toBe(0);
+    expect(target.applied).toBe(1);
+  });
+
+  it("attempt start and window checks use the store's clock, not the local one", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    let dbTime = new Date("2026-01-01T12:00:00.000Z");
+    class ClockedStore extends InMemoryStore {
+      async now() {
+        return dbTime;
+      }
+    }
+    const store = new ClockedStore();
+    const target = makeTarget();
+    const base = contractFor(target, 30_000);
+    const contract: typeof base = {
+      ...base,
+      async execute() {
+        target.executeCalls += 1;
+        throw new Error("timeout");
+      }
+    };
+
+    const first = await runEffect(store, contract, { identity, intent });
+    expect(first.attempts[0].startedAt).toBe("2026-01-01T12:00:00.000Z");
+    expect(first.retryNotBefore).toBe("2026-01-01T12:00:30.000Z");
+
+    // This host's clock jumps far ahead; the shared clock has only moved 5s. Still too early.
+    vi.setSystemTime(new Date("2026-01-02T00:00:00.000Z"));
+    dbTime = new Date("2026-01-01T12:00:05.000Z");
+    const early = await runEffect(store, contract, { identity, intent });
+    expect(early.retryNotBefore).toBe(first.retryNotBefore);
+    expect(target.observeCalls).toBe(1);
+    expect(target.executeCalls).toBe(1);
+  });
+
+  it("a conflict on create never hands back another intent's result", async () => {
+    const store = new LosableLockStore();
+    const target = makeTarget();
+    const originalCreate = store.inner.createOperation.bind(store.inner);
+    store.inner.createOperation = async (input) => {
+      // Between this pass's read and its create, a pass whose lock was lost created the same id
+      // for a different intent.
+      await originalCreate({ ...input, intent: { amount: 500 } });
+      return originalCreate(input);
+    };
+
+    await expect(runEffect(store, contractFor(target, 0), { identity, intent: { amount: 5 } })).rejects.toThrow(
+      /different intent/
+    );
+    expect(target.executeCalls).toBe(0);
+  });
+});
