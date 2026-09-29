@@ -105,6 +105,7 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 9.5 | Intent containing a `Date` | Stored as ISO string; matches itself after a Postgres round trip; a different date is a conflict | No | T71 |
 | 9.6 | Intent JSON can't store faithfully: circular, function, symbol, BigInt, Map, Set, typed array, getter, or `undefined` itself | `TypeError` naming the path, before anything is written or executed | No | T72, T73, T74, T105, T106, T107 |
 | 9.8 | Intents that JSON stores identically: `{ a: undefined }` / `{}`, `NaN` / `null`, a `Date` / its ISO string | The same operation — identity follows what is stored | No | T108, T109, T110 |
+| 9.10 | Intent reads differently each time (a stateful `toJSON()`) | Read exactly once per call; that reading is what's stored and fingerprinted; a later, different reading is a loud conflict | No | T113 |
 | 9.9 | Contract supplies its own `fingerprintIntent()` | corrobo uses it and does not apply the default JSON rules to that intent; the store must still be able to persist the intent | No | T70, T111 |
 | 9.7 | A new identity | A genuinely new operation | Yes (it's new) | T75 |
 
@@ -262,3 +263,4 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 - **T110** [`tests/fingerprint.test.ts`](../tests/fingerprint.test.ts) — "an intent fingerprints the same before and after a JSON round trip (Date vs its persisted ISO string)"
 - **T111** [`tests/fingerprint.test.ts`](../tests/fingerprint.test.ts) — "a custom fingerprintIntent takes responsibility: corrobo does not apply the default rules to that intent"
 - **T112** [`tests/failure-catalog.test.ts`](../tests/failure-catalog.test.ts) — "a thrown value whose message can't even be read is still recorded as a transport failure"
+- **T113** [`tests/postgres-failure-catalog.test.ts`](../tests/postgres-failure-catalog.test.ts) — "%s: stored intent == the single reading; a later, different reading is a conflict"

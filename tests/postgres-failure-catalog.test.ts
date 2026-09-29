@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { runEffect } from "../src/core/runtime";
 import type { EffectContract } from "../src/core/types";
 import { PostgresStore } from "../src/stores/postgres";
+import { InMemoryStore } from "../src/stores/memory";
 
 const connectionString = process.env.CORROBO_TEST_DATABASE_URL;
 
@@ -143,5 +144,46 @@ describe.skipIf(!connectionString)("PostgresStore: exact round trip and connecti
       /connection refused/
     );
     expect(executed).toBe(0);
+  });
+});
+
+describe("the intent is read exactly once per call, and that reading is what is stored and fingerprinted", () => {
+  const stateful = () => {
+    const counter = { reads: 0 };
+    const intent = { order: { toJSON: () => ({ version: ++counter.reads }) } };
+    return { counter, intent };
+  };
+  const contract: EffectContract<unknown, unknown, unknown> = {
+    operationType: "test/stateful",
+    capabilities: { nativeIdempotency: false, callerGeneratedIdentity: true, optimisticConcurrency: false, convergence: false },
+    retryPolicy: { maxAttempts: 1, retryOnNotApplied: false },
+    execute: async () => ({}),
+    observe: async () => ({ status: "observed", data: {}, authoritative: true, source: "t", observedAt: new Date().toISOString() }),
+    reconcile: () => ({ evidenceState: "APPLIED", reason: { code: "A", summary: "a" } })
+  };
+
+  it.each([
+    ["InMemoryStore", async () => ({ store: new InMemoryStore(), done: async () => {} })],
+    ...(connectionString
+      ? [["PostgresStore", async () => {
+          const pool = new Pool({ connectionString });
+          await PostgresStore.migrate(pool);
+          await pool.query("DELETE FROM corrobo_operations WHERE id = 'stateful-1'");
+          return { store: new PostgresStore(pool, { acknowledgePersistence: true }), done: () => pool.end() };
+        }] as const]
+      : [])
+  ] as const)("%s: stored intent == the single reading; a later, different reading is a conflict", async (_name, make) => {
+    const { store, done } = await make();
+    const { counter, intent } = stateful();
+    const identity = { id: "stateful-1", operationType: contract.operationType };
+
+    await runEffect(store, contract, { identity, intent });
+    expect(counter.reads).toBe(1); // toJSON ran once for the whole call
+    expect((await store.getOperation(identity.id))?.intent).toEqual({ order: { version: 1 } });
+
+    // The same object now reads as { version: 2 }: it is honestly a different intent.
+    await expect(runEffect(store, contract, { identity, intent })).rejects.toThrow(/different intent/);
+    expect(counter.reads).toBe(2);
+    await done();
   });
 });

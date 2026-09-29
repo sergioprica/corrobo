@@ -5,60 +5,70 @@ import type { EffectContract } from "./types";
  * keys recursively sorted (array order is preserved — it's meaningful). Two intents that differ
  * only in property order fingerprint identically, and an intent fingerprints the same before and
  * after a JSON round trip through a store — by construction, because the fingerprint is computed
- * from that round trip itself.
+ * from the stored form itself (see materializeIntent).
  *
  * So intents that JSON stores identically ARE the same intent here: `{ a: undefined }` and `{}`,
- * `NaN` and `null`, a `Date` and its ISO string. Values JSON would silently lose, mangle, or
- * store as something else are rejected with a TypeError naming the path instead: circular
- * references, functions, symbols, BigInts, Maps, Sets, weak collections, typed arrays,
- * ArrayBuffers and own getter properties (a getter can return something different on every
- * read). A value with its own `toJSON()`, like Date or Buffer, is judged by what it returns.
+ * `NaN` and `null`, a `Date` and its ISO string.
  */
 export function canonicalStringify(value: unknown): string {
-  assertJsonFaithful(value, "", "intent", new Set());
-  const json = JSON.stringify(value);
+  return JSON.stringify(sortKeysDeep(materializeIntent(value)));
+}
+
+/**
+ * The stored form of an intent: the result of reading it exactly once through JSON semantics
+ * (`toJSON()` applied with its real key), as plain data. runEffect persists this value and
+ * fingerprints this value, so what was fingerprinted is what was stored, even if the original
+ * object would read differently a second time.
+ *
+ * Values JSON would silently lose, mangle, or store as something else are rejected with a
+ * TypeError naming the path: circular references, functions, symbols, BigInts, Maps, Sets, weak
+ * collections, typed arrays, ArrayBuffers, own getter properties, and `undefined` as the whole
+ * intent. A value with its own `toJSON()`, like Date or Buffer, is judged by what it returns.
+ */
+export function materializeIntent(value: unknown): unknown {
+  const parentOf = new Map<object, object>();
+  const pathOf = new Map<object, string>();
+  let root: object | null = null;
+
+  const json = JSON.stringify(value, function (this: object, key: string, v: unknown) {
+    // `this` is the object holding `key`; JSON.stringify has already applied toJSON to `v`.
+    let path: string;
+    if (root === null) {
+      root = this;
+      path = "intent";
+    } else {
+      const holderPath = pathOf.get(this) ?? "intent";
+      path = Array.isArray(this) ? `${holderPath}[${key}]` : `${holderPath}.${key}`;
+      if (Object.getOwnPropertyDescriptor(this, key)?.get) {
+        // A getter can return something different on every read.
+        throw notSerializable(path, "a getter");
+      }
+    }
+    if (typeof v === "function" || typeof v === "symbol" || typeof v === "bigint") {
+      throw notSerializable(path, `a ${typeof v}`);
+    }
+    if (v === null || typeof v !== "object") return v;
+    if (
+      v instanceof Map ||
+      v instanceof Set ||
+      v instanceof WeakMap ||
+      v instanceof WeakSet ||
+      v instanceof ArrayBuffer ||
+      ArrayBuffer.isView(v)
+    ) {
+      throw notSerializable(path, `a ${v.constructor.name}`);
+    }
+    for (let holder: object | undefined = this; holder && holder !== root; holder = parentOf.get(holder)) {
+      if (holder === v) throw notSerializable(path, "a circular reference");
+    }
+    parentOf.set(v, this);
+    pathOf.set(v, path);
+    return v;
+  });
   if (json === undefined) {
     throw notSerializable("intent", "undefined");
   }
-  return JSON.stringify(sortKeysDeep(JSON.parse(json)));
-}
-
-/** Walks the value the way JSON.stringify will (honoring toJSON with its real key) and rejects what it would mangle. */
-function assertJsonFaithful(value: unknown, key: string, path: string, ancestors: Set<object>): void {
-  if (value !== null && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function") {
-    value = (value as { toJSON: (key: string) => unknown }).toJSON(key);
-  }
-  if (typeof value === "function" || typeof value === "symbol" || typeof value === "bigint") {
-    throw notSerializable(path, `a ${typeof value}`);
-  }
-  if (value === null || typeof value !== "object") return;
-  if (
-    value instanceof Map ||
-    value instanceof Set ||
-    value instanceof WeakMap ||
-    value instanceof WeakSet ||
-    value instanceof ArrayBuffer ||
-    ArrayBuffer.isView(value)
-  ) {
-    throw notSerializable(path, `a ${value.constructor.name}`);
-  }
-  if (ancestors.has(value)) {
-    throw notSerializable(path, "a circular reference");
-  }
-  ancestors.add(value);
-  if (Array.isArray(value)) {
-    value.forEach((item, i) => assertJsonFaithful(item, String(i), `${path}[${i}]`, ancestors));
-  } else {
-    for (const k of Object.keys(value)) {
-      if (Object.getOwnPropertyDescriptor(value, k)?.get) {
-        // A getter can return something different on every read, so the intent that was
-        // fingerprinted need not be the intent that gets stored.
-        throw notSerializable(`${path}.${k}`, "a getter");
-      }
-      assertJsonFaithful((value as Record<string, unknown>)[k], k, `${path}.${k}`, ancestors);
-    }
-  }
-  ancestors.delete(value);
+  return JSON.parse(json);
 }
 
 /** Sorts keys of already-parsed JSON data. defineProperty so a "__proto__" key stays a plain key. */

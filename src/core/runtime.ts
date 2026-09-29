@@ -1,6 +1,6 @@
 import { decideDisposition } from "./disposition";
 import type { DecideDispositionResult } from "./disposition";
-import { canonicalStringify, fingerprintIntent } from "./fingerprint";
+import { canonicalStringify, fingerprintIntent, materializeIntent } from "./fingerprint";
 import { StoreConflictError } from "./store";
 import type { CoordinatedStore, EffectStore } from "./store";
 import type {
@@ -81,9 +81,30 @@ function resultForInProgress<Observation>(identity: OperationRecord["identity"])
  * operationType, or the same operationType with a different intent. Never silently return one
  * operation's result for what is actually a second, unrelated request under the same id.
  */
+/**
+ * The request's intent as it will be stored, read once per runEffect() call. With the default
+ * fingerprint, `stored` is the plain-JSON form (see materializeIntent) and `fingerprint` is
+ * computed from it, so what is fingerprinted is exactly what is persisted. With a contract's own
+ * fingerprintIntent(), the intent is stored as given and fingerprinted lazily, only when there
+ * is an existing record to compare against.
+ */
+interface PreparedIntent {
+  stored: unknown;
+  fingerprint: string | null;
+}
+
+function prepareIntent<Intent>(contract: EffectContract<Intent, unknown, unknown>, intent: Intent): PreparedIntent {
+  if (contract.fingerprintIntent) {
+    return { stored: intent, fingerprint: null };
+  }
+  const stored = materializeIntent(intent);
+  return { stored, fingerprint: canonicalStringify(stored) };
+}
+
 function assertSameLogicalOperation<Intent>(
   contract: EffectContract<Intent, unknown, unknown>,
   request: EffectRequest<Intent>,
+  prepared: PreparedIntent,
   existing: OperationRecord
 ): void {
   if (existing.identity.operationType !== contract.operationType) {
@@ -94,7 +115,7 @@ function assertSameLogicalOperation<Intent>(
     );
   }
   const existingFingerprint = fingerprintIntent(contract, existing.intent as Intent);
-  const requestFingerprint = fingerprintIntent(contract, request.intent);
+  const requestFingerprint = prepared.fingerprint ?? fingerprintIntent(contract, request.intent);
   if (existingFingerprint !== requestFingerprint) {
     throw new Error(
       `corrobo: operation identity "${request.identity.id}" was already used with a different intent ` +
@@ -391,23 +412,21 @@ export async function runEffect<Intent, Observation, Evidence>(
   contract: EffectContract<Intent, Observation, Evidence>,
   request: EffectRequest<Intent>
 ): Promise<EffectResult<Observation>> {
-  // With the default fingerprint, an intent that can't be stored faithfully as JSON (see
-  // canonicalStringify) is rejected here, before anything else happens — never after an effect.
+  // Read the intent once, first. With the default fingerprint, an intent that can't be stored
+  // faithfully as JSON is rejected here, before anything else happens — never after an effect.
   // A contract-supplied fingerprintIntent() takes responsibility for its own intents instead.
-  if (!contract.fingerprintIntent) {
-    canonicalStringify(request.intent);
-  }
+  const prepared = prepareIntent(contract, request.intent);
   const lock = await store.tryAcquireLock(request.identity.id);
   if (!lock) {
     const existing = await store.getOperation(request.identity.id);
     if (!existing) {
       return resultForInProgress(request.identity);
     }
-    assertSameLogicalOperation(contract, request, existing);
+    assertSameLogicalOperation(contract, request, prepared, existing);
     return resultFromRecord(existing);
   }
   try {
-    return await runCoordinated(lock.store, contract, request);
+    return await runCoordinated(lock.store, contract, request, prepared);
   } catch (err) {
     if (!(err instanceof StoreConflictError)) {
       throw err;
@@ -420,7 +439,7 @@ export async function runEffect<Intent, Observation, Evidence>(
     if (!current) {
       throw err;
     }
-    assertSameLogicalOperation(contract, request, current);
+    assertSameLogicalOperation(contract, request, prepared, current);
     return resultFromRecord(current);
   } finally {
     await lock.release();
@@ -430,12 +449,13 @@ export async function runEffect<Intent, Observation, Evidence>(
 async function runCoordinated<Intent, Observation, Evidence>(
   store: CoordinatedStore,
   contract: EffectContract<Intent, Observation, Evidence>,
-  request: EffectRequest<Intent>
+  request: EffectRequest<Intent>,
+  prepared: PreparedIntent
 ): Promise<EffectResult<Observation>> {
   const existing = await store.getOperation(request.identity.id);
 
   if (existing) {
-    assertSameLogicalOperation(contract, request, existing);
+    assertSameLogicalOperation(contract, request, prepared, existing);
   }
 
   if (!existing) {
@@ -443,7 +463,7 @@ async function runCoordinated<Intent, Observation, Evidence>(
     const initialStatus: OperationStatus = auth.requiresReview ? "AWAITING_REVIEW" : "OPEN";
     const created = await store.createOperation({
       identity: request.identity,
-      intent: request.intent,
+      intent: prepared.stored,
       status: initialStatus,
       reviewReason: auth.requiresReview ? (auth.reason ?? defaultReviewReason()) : undefined
     });
