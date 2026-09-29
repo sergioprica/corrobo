@@ -1,0 +1,51 @@
+# Guarantees, in questions and answers
+
+Short answers, each pointing at the [failure matrix](failure-matrix.md) rows (and through them, the tests) that back it. Where an answer depends on your contract rather than on corrobo, it says so.
+
+**What problem does corrobo solve?**
+You made a consequential call to another system (a refund, a message, a ticket, a merge) and the outcome is unclear: a timeout, a reset connection, a crash. corrobo records the operation before the call, asks the external system what actually happened, and tells you what's safe to do next, so an unclear outcome is never guessed into a duplicate or a silent drop.
+
+**Why isn't retry enough?**
+A timeout means you didn't get an answer, not that nothing happened. If the provider committed and only the response was lost, retrying does it twice. `npm run demo` shows exactly this: 2 credits from a catch-and-retry loop, 1 with corrobo. → rows 1.2, 1.6
+
+**Why isn't an idempotency key always enough?**
+Often it is, and you should use one when your provider supports it (row 1.7). The gaps: many APIs don't support them; keys are retained for a limited time (Stripe: at least 24 hours), so a later retry is a new request; they deduplicate *requests*, not your business operation, if the key isn't derived from a stable operation id; and they don't tell you what happened for asynchronous outcomes. → rows 1.7, 11.1, 11.2, 4.x; [why-not-just](why-not-just.md)
+
+**Why isn't a workflow engine by itself the whole answer?**
+Temporal, Restate, Trigger.dev, Inngest, Vercel Workflow and DBOS make your *process* durable: a crashed step runs again. A step that crashes after its external write but before its result is recorded therefore runs its write again, which is why each of them tells you to make steps idempotent. corrobo goes inside that step. → [why-not-just](why-not-just.md)
+
+**What happens after a timeout?**
+corrobo does not assume failure. It observes the external system. Found → `APPLIED` / `COMPLETE`. Not found → `NOT_APPLIED`, but the timed-out request may still land, so a retry waits until your declared `maxInFlightMs` has passed and corrobo checks once more first; without `maxInFlightMs` the answer is `INVESTIGATE`. → rows 1.2–1.5
+
+**What happens when observation fails?**
+`UNKNOWN` → `INVESTIGATE`. corrobo never turns "couldn't check" into "didn't happen". → rows 3.1–3.3
+
+**What happens when the state is still converging?**
+`PENDING`, with no next step yet. Calling again re-checks; it never re-executes. If the provider later rejects the request, it becomes `NOT_APPLIED` and follows your retry policy. → rows 4.1–4.4
+
+**What happens when corrobo genuinely cannot know?**
+It says so: `UNKNOWN` → `INVESTIGATE`, closed, for a person or another process to decide. That's a correct answer, not a failure mode to work around. → rows 2.6, 3.1, 6.4
+
+**What happens when two workers race?**
+With `PostgresStore`, one of them executes; the other gets the current record (or an honest "in progress") without waiting or executing. Different operations don't block each other. If the winner's database connection dies mid-call, version-checked writes and the late-landing rule still prevent a second execution. → rows 8.1–8.11
+
+**What happens after a crash?**
+The attempt was recorded before `execute()` ran, so the restart knows it was attempted. It observes first: `APPLIED` finishes it; `NOT_APPLIED` follows the late-landing rule; `UNKNOWN` goes to a person. With `InMemoryStore`, a restart loses everything, so use `PostgresStore` wherever that matters. → rows 2.1–2.9
+
+**What does corrobo guarantee?**
+With `PostgresStore` and an `observe()` that tells the truth, corrobo will not itself cause a blind duplicate in any case in the failure matrix; every recorded next step is derived from evidence, never invented; an operation identity can't silently be reused for a different intent (with the default fingerprint; a custom `fingerprintIntent()` defines its own notion of "same"); raw thrown error objects are never persisted; nothing is sent to the maintainer.
+
+**What does it explicitly not guarantee?**
+Exactly-once execution in general. Anything about writes made outside corrobo. A correct `observe()`: if your lookup can't prove absence (a search, an eventually consistent read) and your contract calls that `NOT_APPLIED`, corrobo will believe it (row 3.4). A correct `maxInFlightMs`: it's your bound, corrobo can't verify it. It is also not a scheduler: it doesn't decide when you call it again.
+
+**How do I wrap one mutation?**
+Write an effect contract: `execute` (make the call, sending the operation id if the API lets you), `observe` (ask the system what's true), `reconcile` (turn that into an evidence state). Then call `runEffect(store, contract, { identity, intent })`. See the [quickstart](../README.md#quickstart).
+
+**How do I test my contract?**
+Today: inject faults around your real calls with `corrobo/testing` (`withFaultInjection`, `withObservationFault`), and count effects on a fake of the external system rather than trusting corrobo's record — the [demo's tests](../tests/timeout-demo.test.ts) show the pattern, including a response lost after commit, a request lost before it, and a late landing. A reusable conformance harness is under consideration.
+
+**What data gets persisted?**
+With `PostgresStore`: the operation identity, the intent (as JSON), each attempt's transport outcome, observations, evidence state, next step, reason metadata, and error messages, with no automatic expiry. Never raw thrown error objects. With `InMemoryStore`: nothing beyond the process. → rows 10.1–10.9; [README privacy](../README.md#privacy-and-data-handling)
+
+**How do I use it with the workflow stack I already have?**
+Call `runEffect` inside the step or activity that makes the external call, with an operation identity derived from something stable in the workflow (for example the workflow id plus the step name). The engine retries the step; corrobo decides whether the call inside it needs to happen again.

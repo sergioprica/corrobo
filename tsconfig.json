@@ -3,7 +3,12 @@
   "compilerOptions": {
     "noEmit": true,
     "rootDir": ".",
-    "types": ["node", "vitest/globals"]
+    "types": ["node", "vitest/globals"],
+    "paths": {
+      "corrobo": ["./src/core/index.ts"],
+      "corrobo/postgres": ["./src/stores/postgres.ts"],
+      "corrobo/testing": ["./src/testing/index.ts"]
+    }
   },
   "include": ["src", "tests", "examples", "scripts"]
 }
