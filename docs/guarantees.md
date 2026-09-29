@@ -15,7 +15,7 @@ Often it is, and you should use one when your provider supports it (row 1.7). Th
 Temporal, Restate, Trigger.dev, Inngest, Vercel Workflow and DBOS make your *process* durable: a crashed step runs again. A step that crashes after its external write but before its result is recorded therefore runs its write again, which is why each of them tells you to make steps idempotent. corrobo goes inside that step. → [why-not-just](why-not-just.md)
 
 **What happens after a timeout?**
-corrobo does not assume failure. It observes the external system. Found → `APPLIED` / `COMPLETE`. Not found → `NOT_APPLIED`, but the timed-out request may still land, so the `RETRY` carries a `retryNotBefore` time: nothing is executed before it, and after it corrobo checks once more before executing. Without a declared `maxInFlightMs` the answer is `INVESTIGATE`. → rows 1.2–1.5
+corrobo does not assume failure. It observes the external system. Found → `APPLIED` / `COMPLETE`. Not found → `NOT_APPLIED`, but the timed-out request may still land, so while it could, the `RETRY` carries a `retryNotBefore` time: nothing is executed before it, and after it corrobo checks once more before executing. Without a declared `maxInFlightMs` the answer is `INVESTIGATE`. → rows 1.2–1.5
 
 **What happens when observation fails?**
 `UNKNOWN` → `INVESTIGATE`. corrobo never turns "couldn't check" into "didn't happen". → rows 3.1–3.3

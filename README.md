@@ -83,7 +83,7 @@ Two answers, kept separate on purpose: what the evidence shows, and what's safe 
 
 Plus `REVIEW`: an optional `authorize()` hook can require human sign-off *before* anything is executed; a reviewer can approve or reject.
 
-**Requests can land late.** A timed-out request isn't undone, it's just unanswered, and it can still be applied after corrobo first looks. So when a failed call is followed by `NOT_APPLIED`, the `RETRY` comes with a `retryNotBefore` time (your declared `maxInFlightMs` after the attempt started): calling earlier does nothing, and calling after it makes corrobo check once more before it executes again. If you don't declare `maxInFlightMs`, the answer is `INVESTIGATE`. Details: [spec §O](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
+**Requests can land late.** A timed-out request isn't undone, it's just unanswered, and it can still be applied after corrobo first looks. So when a failed call is followed by `NOT_APPLIED` while that request could still land, the `RETRY` comes with a `retryNotBefore` time (your declared `maxInFlightMs` after the attempt started): calling earlier does nothing, and calling after it makes corrobo check once more before it executes again. If you don't declare `maxInFlightMs`, the answer is `INVESTIGATE`. Details: [spec §O](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
 
 ## Idempotency keys and durable workflows
 
