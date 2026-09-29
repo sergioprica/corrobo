@@ -56,6 +56,14 @@
   "engines": {
     "node": ">=18"
   },
+  "peerDependencies": {
+    "pg": ">=8"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.json",
@@ -71,13 +79,11 @@
     "example:jev:live": "tsx examples/jev-refund/live.ts",
     "verify": "npm run typecheck && npm run test && npm run build"
   },
-  "dependencies": {
-    "pg": "^8.13.1"
-  },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
     "@typesafe-ai/sdk": "^0.6.0",
+    "pg": "^8.13.1",
     "stripe": "^17.4.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

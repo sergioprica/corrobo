@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { StoreConflictError } from "../core/store";
 import type { CoordinatedStore, EffectStore, NewOperationInput, OperationLock } from "../core/store";
 import type {
@@ -46,9 +45,30 @@ interface Row {
   version: string;
 }
 
-/** Anything with node-postgres's .query() signature — a Pool or a single PoolClient. */
+/**
+ * The parts of node-postgres (`pg`) that PostgresStore uses, described structurally: a `pg`
+ * `Pool` satisfies `PgPool`, and a checked-out `PoolClient` satisfies `PgPoolClient`. corrobo
+ * never imports `pg` itself — you create the pool with your own `pg` install — so corrobo has no
+ * runtime dependency on it, and its type declarations don't need `@types/pg` to compile.
+ */
+export interface PgQueryable {
+  query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
+}
+
+export interface PgPoolClient extends PgQueryable {
+  /** Passing an error destroys the connection instead of returning it to the pool. */
+  release(err?: Error | boolean): void;
+  on(event: "error", listener: (err: Error) => void): unknown;
+  off(event: "error", listener: (err: Error) => void): unknown;
+}
+
+export interface PgPool extends PgQueryable {
+  connect(): Promise<PgPoolClient>;
+}
+
+/** Internal: the same query surface, typed per call site. */
 interface Queryable {
-  query<T extends QueryResultRow = never>(text: string, params?: unknown[]): Promise<{ rows: T[] }>;
+  query<T extends object = never>(text: string, params?: unknown[]): Promise<{ rows: T[] }>;
 }
 
 function rowToRecord(row: Row): OperationRecord {
@@ -82,12 +102,18 @@ async function versionedWriteResult(
   }
   const current = await getOperationImpl(q, identityId);
   if (!current) {
-    throw new Error(`corrobo: unknown operation identity "${identityId}"`);
+    throw new Error(
+      `corrobo: no operation "${identityId}" in this store. Store write methods are called by runEffect() on ` +
+        `operations it created; if you're calling them directly, create the operation first.`
+    );
   }
   if (current.version !== expectedVersion) {
     throw new StoreConflictError(identityId, expectedVersion, current.version);
   }
-  throw new Error(preconditionError ?? `corrobo: write to operation "${identityId}" was not applied`);
+  throw new Error(
+    preconditionError ??
+      `corrobo: a write to operation "${identityId}" matched no row even though the operation exists at the expected version; this indicates a store bug — please report it.`
+  );
 }
 
 /**
@@ -241,7 +267,7 @@ async function updateLatestAttemptImpl(
     identityId,
     expectedVersion,
     result.rows[0],
-    `corrobo: no attempt to update for operation "${identityId}"`
+    `corrobo: operation "${identityId}" has no attempt to update (reserve one first; runEffect() always does)`
   );
 }
 
@@ -310,7 +336,7 @@ export interface PostgresStoreOptions {
 
 export class PostgresStore implements EffectStore {
   constructor(
-    private readonly pool: Pool,
+    private readonly pool: PgPool,
     options: PostgresStoreOptions
   ) {
     if (!options || options.acknowledgePersistence !== true) {
@@ -323,7 +349,7 @@ export class PostgresStore implements EffectStore {
   }
 
   /** Creates the schema if it doesn't exist. Call once at startup. */
-  static async migrate(pool: Pool | PoolClient): Promise<void> {
+  static async migrate(pool: PgQueryable): Promise<void> {
     await pool.query(POSTGRES_SCHEMA_SQL);
   }
 
@@ -342,7 +368,7 @@ export class PostgresStore implements EffectStore {
       client.release(err);
     };
     try {
-      const result = await client.query<{ locked: boolean }>("SELECT pg_try_advisory_lock($1) AS locked", [key]);
+      const result = await (client as Queryable).query<{ locked: boolean }>("SELECT pg_try_advisory_lock($1) AS locked", [key]);
       if (!result.rows[0]?.locked) {
         done();
         return null;
