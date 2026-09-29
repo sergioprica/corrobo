@@ -1,7 +1,7 @@
 {
   "name": "corrobo",
   "version": "0.2.1",
-  "description": "A small deterministic runtime for reconciling side-effecting operations: separates transport evidence from business truth and produces a conservative recovery disposition.",
+  "description": "Safe retries for external side effects: when a timeout or crash leaves you unsure whether a write happened, check the real system before doing it again.",
   "license": "MIT",
   "homepage": "https://github.com/vidithsalla/corrobo#readme",
   "repository": {
@@ -12,11 +12,17 @@
     "url": "https://github.com/vidithsalla/corrobo/issues"
   },
   "keywords": [
-    "reliability",
     "idempotency",
+    "retry",
     "side-effects",
+    "reconciliation",
+    "timeout",
+    "reliability",
+    "durable-execution",
+    "distributed-systems",
+    "ai-agents",
     "postgres",
-    "agents"
+    "typescript"
   ],
   "files": [
     "dist"
@@ -55,6 +61,7 @@
     "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "quickstart": "tsx examples/quickstart/quickstart.ts",
     "demo": "tsx examples/timeout-after-write/demo.ts",
     "demo:svg": "tsx scripts/render-demo-svg.ts",
     "example:rest": "tsx examples/rest/demo.ts",

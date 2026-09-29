@@ -1,0 +1,36 @@
+<!doctype html>
+<!--
+  Source for docs/assets/social-preview.png (GitHub social preview, 1280x640).
+  The numbers are the demo's own proof (npm run demo, which CI runs and which fails if they change).
+  Render:
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --hide-scrollbars \
+      --window-size=1280,640 --screenshot=docs/assets/social-preview.png "file://$PWD/scripts/social-preview.html"
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 1280px; height: 640px; background: #0d1117; color: #e6edf3; overflow: hidden; }
+  body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; display: flex; flex-direction: column; justify-content: center; padding: 0 88px; box-sizing: border-box; }
+  .name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 30px; color: #8b949e; letter-spacing: 0.5px; }
+  h1 { font-size: 64px; line-height: 1.12; margin: 18px 0 20px; font-weight: 700; color: #ffffff; }
+  .sub { font-size: 28px; line-height: 1.4; color: #c9d1d9; max-width: 1040px; }
+  .loop { margin-top: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 26px; color: #8b949e; }
+  .rows { margin-top: 40px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 27px; line-height: 1.7;
+          display: grid; grid-template-columns: max-content max-content max-content; column-gap: 26px; }
+  .bad { color: #ff7b72; } .good { color: #56d364; } .dim { color: #8b949e; }
+  .foot { position: absolute; left: 88px; bottom: 44px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 24px; color: #8b949e; }
+</style>
+</head>
+<body>
+  <div class="name">corrobo</div>
+  <h1>Your API call timed out.<br>Did the write happen?</h1>
+  <div class="sub">Ask the external system what actually happened before doing it again.</div>
+  <div class="loop">execute → observe → reconcile → recover</div>
+  <div class="rows">
+    <span class="dim">response lost after commit</span><span>catch → retry</span><span class="bad">2 credits ✗</span>
+    <span class="dim">response lost after commit</span><span>corrobo</span><span class="good">1 credit ✓</span>
+  </div>
+  <div class="foot">npm install corrobo · TypeScript · MIT</div>
+</body>
+</html>

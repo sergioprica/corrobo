@@ -1,6 +1,18 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
+const src = (path: string) => fileURLToPath(new URL(`./src/${path}`, import.meta.url));
+
 export default defineConfig({
+  // Lets examples import "corrobo" exactly as a user would, resolved to this repo's source
+  // (tsconfig.json "paths" does the same for tsx and the editor).
+  resolve: {
+    alias: [
+      { find: /^corrobo\/postgres$/, replacement: src("stores/postgres.ts") },
+      { find: /^corrobo\/testing$/, replacement: src("testing/index.ts") },
+      { find: /^corrobo$/, replacement: src("core/index.ts") }
+    ]
+  },
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts"],
