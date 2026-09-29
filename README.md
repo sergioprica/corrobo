@@ -28,13 +28,10 @@ npm install corrobo
 Wrap one consequential call in an *effect contract*: how to do it, how to check it, and how to judge what you see. Here `payments` is your API client (in the runnable version, [`examples/quickstart`](examples/quickstart), it's a stand-in that loses the response after refunding).
 
 ```ts
-import { runEffect, InMemoryStore, type EffectContract } from "corrobo";
+import { runEffect, InMemoryStore, defineContract, observed, reconciled } from "corrobo";
 
-type RefundIntent = { orderId: string; amountCents: number };
-
-const refundOrder: EffectContract<RefundIntent, { found: number }, unknown> = {
+const refundOrder = defineContract<{ orderId: string; amountCents: number }>()({
   operationType: "payments/refund",
-  capabilities: { nativeIdempotency: false, callerGeneratedIdentity: true, optimisticConcurrency: false, convergence: false },
   retryPolicy: { maxAttempts: 3, retryOnNotApplied: true },
   maxInFlightMs: 10_000, // your request timeout + how long the API may take to apply a request
 
@@ -42,32 +39,24 @@ const refundOrder: EffectContract<RefundIntent, { found: number }, unknown> = {
   execute: ({ intent, identity }) => payments.createRefund({ ...intent, reference: identity.id }),
 
   // 2. Ask the API what is actually true. Never infer it from execute()'s outcome.
-  observe: async ({ identity }) => ({
-    status: "observed",
-    data: { found: (await payments.findRefunds(identity.id)).length },
-    authoritative: true,
-    source: "payments.findRefunds",
-    observedAt: new Date().toISOString()
-  }),
+  observe: async ({ identity }) =>
+    observed((await payments.findRefunds(identity.id)).length, { source: "payments.findRefunds", authoritative: true }),
 
   // 3. Compare what you intended with what you observed.
   reconcile: ({ observation }) => {
-    if (observation.status !== "observed") {
-      return { evidenceState: "UNKNOWN", reason: { code: "NO_READ", summary: "Could not read refunds." } };
-    }
-    return observation.data.found === 0
-      ? { evidenceState: "NOT_APPLIED", reason: { code: "NO_REFUND", summary: "No refund exists." } }
-      : observation.data.found === 1
-        ? { evidenceState: "APPLIED", reason: { code: "REFUNDED", summary: "Exactly one refund exists." } }
-        : { evidenceState: "CONFLICTED", reason: { code: "DUPLICATES", summary: "More than one refund exists." } };
+    if (observation.status !== "observed") return reconciled("UNKNOWN", "NO_READ", "Could not read refunds.");
+    const found = observation.data;
+    if (found === 0) return reconciled("NOT_APPLIED", "NO_REFUND", "No refund exists.");
+    if (found === 1) return reconciled("APPLIED", "REFUNDED", "Exactly one refund exists.");
+    return reconciled("CONFLICTED", "DUPLICATES", `${found} refunds exist.`);
   }
-};
+});
 
 async function main() {
   payments.loseNextResponse(); // the refund goes through, but the response is lost
 
   const result = await runEffect(new InMemoryStore(), refundOrder, {
-    identity: { id: "refund-order-1001", operationType: refundOrder.operationType },
+    identity: "refund-order-1001",
     intent: { orderId: "1001", amountCents: 5_000 }
   });
 
@@ -109,6 +98,10 @@ Longer answers to "why not just retry / use a key / use Temporal / use a queue /
 
 ## In production: PostgresStore
 
+```
+npm install corrobo pg
+```
+
 ```ts
 import { Pool } from "pg";
 import { PostgresStore } from "corrobo/postgres";
@@ -120,7 +113,7 @@ const store = new PostgresStore(pool, { acknowledgePersistence: true });
 ```
 
 - **Crash safety:** the attempt is recorded before `execute()` runs, so a restart never mistakes "attempted, outcome unknown" for "never attempted". It checks the external system first.
-- **Concurrency:** callers racing on the same identity are coordinated with a Postgres advisory lock (one connection per in-flight operation); different identities run in parallel.
+- **Concurrency:** callers racing on the same identity are coordinated with a Postgres advisory lock; different identities run in parallel. Each operation in flight holds one pool connection for its whole pass, so size `max` on your `Pool` for the operations you run at once, plus whatever else uses that pool.
 - **Lost locks:** if the lock's connection dies while `execute()` is still running, version-checked writes keep the stale caller from overwriting anything, and the late-landing rule keeps the next caller from re-executing too early. Time windows use the database's clock, so skew between hosts doesn't matter.
 - `acknowledgePersistence: true` is required on purpose: this store keeps what your contracts produce, with no automatic expiry (see [privacy](#privacy-and-data-handling)).
 - **Upgrading from 0.2.x:** drain 0.2.x workers first, then run `migrate()` once. See [upgrade notes](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).

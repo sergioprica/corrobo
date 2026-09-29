@@ -37,7 +37,9 @@ export type ObservationResult<Observation> =
  * Describes capabilities of an OPERATION TYPE, not a vendor/integration as a whole —
  * the pressure test found idempotency/versioning support can differ between two
  * operations on the same API (e.g. GitHub merge_pull_request vs. update_issue).
- * Informational/diagnostic; the actual retry decision is driven by RetryPolicy.
+ * Informational only: the runtime never reads it (the retry decision is driven by RetryPolicy,
+ * and late landings by maxInFlightMs). Useful as documentation of the operation for reviewers
+ * and tooling; optional on EffectContract.
  */
 export interface OperationCapabilities {
   nativeIdempotency: boolean;
@@ -97,7 +99,8 @@ export interface ReconcileInput<Intent, Observation, Evidence> {
 
 export interface EffectContract<Intent, Observation, Evidence> {
   operationType: string;
-  capabilities: OperationCapabilities;
+  /** Optional, informational description of the operation type (see OperationCapabilities). */
+  capabilities?: OperationCapabilities;
   retryPolicy: RetryPolicy;
   /**
    * Policy gate evaluated BEFORE execute() is ever called. Returning requiresReview:true
@@ -199,7 +202,12 @@ export interface OperationRecord {
 }
 
 export interface EffectRequest<Intent> {
-  identity: OperationIdentity;
+  /**
+   * The operation's stable identity. A string is shorthand for
+   * `{ id, operationType: contract.operationType }`; if you pass the object form, its
+   * operationType must equal the contract's.
+   */
+  identity: OperationIdentity | string;
   intent: Intent;
   /** Set on a subsequent call to resolve an operation left AWAITING_REVIEW. */
   reviewDecision?: "approved" | "rejected";

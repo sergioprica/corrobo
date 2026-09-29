@@ -10,6 +10,7 @@ import type {
   EffectResult,
   EvidenceState,
   ObservationResult,
+  OperationIdentity,
   OperationRecord,
   OperationStatus,
   ReasonCode,
@@ -101,9 +102,29 @@ function prepareIntent<Intent>(contract: EffectContract<Intent, unknown, unknown
   return { stored, fingerprint: canonicalStringify(stored) };
 }
 
+/** An EffectRequest after identity shorthand is resolved (see runEffect). */
+type ResolvedRequest<Intent> = Omit<EffectRequest<Intent>, "identity"> & { identity: OperationIdentity };
+
+function resolveRequest<Intent>(
+  contract: EffectContract<Intent, unknown, unknown>,
+  request: EffectRequest<Intent>
+): ResolvedRequest<Intent> {
+  if (typeof request.identity === "string") {
+    return { ...request, identity: { id: request.identity, operationType: contract.operationType } };
+  }
+  if (request.identity.operationType !== contract.operationType) {
+    throw new Error(
+      `corrobo: this request's identity says operationType "${request.identity.operationType}", but the ` +
+        `contract is "${contract.operationType}". Pass identity as a plain string id to use the contract's ` +
+        `operationType, or run it with the matching contract.`
+    );
+  }
+  return request as ResolvedRequest<Intent>;
+}
+
 function assertSameLogicalOperation<Intent>(
   contract: EffectContract<Intent, unknown, unknown>,
-  request: EffectRequest<Intent>,
+  request: ResolvedRequest<Intent>,
   prepared: PreparedIntent,
   existing: OperationRecord
 ): void {
@@ -119,7 +140,8 @@ function assertSameLogicalOperation<Intent>(
   if (existingFingerprint !== requestFingerprint) {
     throw new Error(
       `corrobo: operation identity "${request.identity.id}" was already used with a different intent ` +
-        `(operationType "${contract.operationType}"). Two logically different operations must not share the same identity.`
+        `(operationType "${contract.operationType}"). Two logically different operations must not share the same identity: ` +
+        `use a new identity for the new intent, or a fingerprintIntent() that ignores fields that don't change the effect.`
     );
   }
 }
@@ -410,8 +432,9 @@ async function reObserve<Intent, Observation, Evidence>(
 export async function runEffect<Intent, Observation, Evidence>(
   store: EffectStore,
   contract: EffectContract<Intent, Observation, Evidence>,
-  request: EffectRequest<Intent>
+  input: EffectRequest<Intent>
 ): Promise<EffectResult<Observation>> {
+  const request = resolveRequest(contract as EffectContract<Intent, unknown, unknown>, input);
   // Read the intent once, first. With the default fingerprint, an intent that can't be stored
   // faithfully as JSON is rejected here, before anything else happens — never after an effect.
   // A contract-supplied fingerprintIntent() takes responsibility for its own intents instead.
@@ -449,7 +472,7 @@ export async function runEffect<Intent, Observation, Evidence>(
 async function runCoordinated<Intent, Observation, Evidence>(
   store: CoordinatedStore,
   contract: EffectContract<Intent, Observation, Evidence>,
-  request: EffectRequest<Intent>,
+  request: ResolvedRequest<Intent>,
   prepared: PreparedIntent
 ): Promise<EffectResult<Observation>> {
   const existing = await store.getOperation(request.identity.id);

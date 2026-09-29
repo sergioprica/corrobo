@@ -106,6 +106,7 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 9.6 | Intent JSON can't store faithfully: circular, function, symbol, BigInt, Map, Set, typed array, getter, or `undefined` itself | `TypeError` naming the path, before anything is written or executed | No | T72, T73, T74, T105, T106, T107 |
 | 9.8 | Intents that JSON stores identically: `{ a: undefined }` / `{}`, `NaN` / `null`, a `Date` / its ISO string | The same operation — identity follows what is stored | No | T108, T109, T110 |
 | 9.10 | Intent reads differently each time (a stateful `toJSON()`) | Read exactly once per call; that reading is what's stored and fingerprinted; a later, different reading is a loud conflict | No | T113 |
+| 9.11 | Request's explicit `identity.operationType` differs from the contract's (or pass the id as a plain string) | Throws before anything is written or executed; a string id always uses the contract's `operationType` | No | T114, T115 |
 | 9.9 | Contract supplies its own `fingerprintIntent()` | corrobo uses it and does not apply the default JSON rules to that intent; the store must still be able to persist the intent | No | T70, T111 |
 | 9.7 | A new identity | A genuinely new operation | Yes (it's new) | T75 |
 
@@ -140,7 +141,7 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 |---|---|---|
 | 12.1 | No logging of any kind in the library source | T96 |
 | 12.2 | No network code except `PostgresStore` talking to the pool you pass in | T97, T98 |
-| 12.3 | No install-time scripts; `pg` is the only runtime dependency | T99 |
+| 12.3 | No install-time scripts and no runtime dependencies (`pg` is an optional peer, used only through the pool you pass in) | T99 |
 
 ## Not covered by this matrix
 
@@ -249,7 +250,7 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 - **T96** [`tests/failure-catalog.test.ts`](../tests/failure-catalog.test.ts) — "no logging of any kind in src/ (application payloads are never printed by corrobo)"
 - **T97** [`tests/failure-catalog.test.ts`](../tests/failure-catalog.test.ts) — "no network-capable code in src/ except PostgresStore's use of the pool you pass in"
 - **T98** [`tests/failure-catalog.test.ts`](../tests/failure-catalog.test.ts) — "the core and InMemoryStore make no network calls of their own"
-- **T99** [`tests/failure-catalog.test.ts`](../tests/failure-catalog.test.ts) — "package.json declares no install-time scripts and only pg as a runtime dependency"
+- **T99** [`tests/failure-catalog.test.ts`](../tests/failure-catalog.test.ts) — "package.json declares no install-time scripts and no runtime dependencies (pg is an optional peer)"
 - **T100** [`tests/timeout-demo.test.ts`](../tests/timeout-demo.test.ts) — "running the same operation repeatedly never adds a credit"
 - **T101** [`tests/failure-catalog.test.ts`](../tests/failure-catalog.test.ts) — "InMemoryStore is process-local: a new instance (a restarted process) has none of the old records"
 - **T102** [`tests/disposition.test.ts`](../tests/disposition.test.ts) — "APPLIED -> COMPLETE"
@@ -264,3 +265,5 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 - **T111** [`tests/fingerprint.test.ts`](../tests/fingerprint.test.ts) — "a custom fingerprintIntent takes responsibility: corrobo does not apply the default rules to that intent"
 - **T112** [`tests/failure-catalog.test.ts`](../tests/failure-catalog.test.ts) — "a thrown value whose message can't even be read is still recorded as a transport failure"
 - **T113** [`tests/postgres-failure-catalog.test.ts`](../tests/postgres-failure-catalog.test.ts) — "%s: stored intent == the single reading; a later, different reading is a conflict"
+- **T114** [`tests/helpers.test.ts`](../tests/helpers.test.ts) — "an explicit identity whose operationType disagrees with the contract is rejected before anything happens"
+- **T115** [`tests/helpers.test.ts`](../tests/helpers.test.ts) — "identity as a string is shorthand for { id, operationType: contract.operationType }"
