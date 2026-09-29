@@ -41,8 +41,8 @@ describe("docs/failure-matrix.md", () => {
     const path = join(root, file);
     expect(existsSync(path), file).toBe(true);
     const source = readFileSync(path, "utf8");
-    // A test title: it("…") directly, or the title half of it.each([...])("…").
-    const asTitle = new RegExp(`(?:\\bit\\(|\\]\\)\\()\\s*${escapeRegExp(JSON.stringify(title))}`);
+    // A test title: it("…") directly, or the title half of it.each(…)("…").
+    const asTitle = new RegExp(`(?:\\bit\\(|\\)\\()\\s*${escapeRegExp(JSON.stringify(title))}`);
     expect(source, `${file}: "${title}"`).toMatch(asTitle);
   });
 });
