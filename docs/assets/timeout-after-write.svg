@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="748" height="538" viewBox="0 0 748 538" role="img" aria-label="corrobo demo: after a lost response the naive retry credits the account twice; corrobo checks the ledger and credits once">
+<style>
+text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:14px;fill:#e6e6e6;white-space:pre;opacity:0}
+.b{font-weight:700;fill:#ffffff}.d{fill:#8b949e}.r{fill:#ff7b72}.g{fill:#56d364}
+@keyframes l0{0%,2.22%{opacity:0}2.72%,96%{opacity:1}100%{opacity:0}}
+@keyframes l1{0%,7.78%{opacity:0}8.28%,96%{opacity:1}100%{opacity:0}}
+@keyframes l2{0%,7.78%{opacity:0}8.28%,96%{opacity:1}100%{opacity:0}}
+@keyframes l3{0%,10.83%{opacity:0}11.33%,96%{opacity:1}100%{opacity:0}}
+@keyframes l4{0%,10.83%{opacity:0}11.33%,96%{opacity:1}100%{opacity:0}}
+@keyframes l5{0%,13.89%{opacity:0}14.39%,96%{opacity:1}100%{opacity:0}}
+@keyframes l6{0%,16.94%{opacity:0}17.44%,96%{opacity:1}100%{opacity:0}}
+@keyframes l7{0%,20.00%{opacity:0}20.50%,96%{opacity:1}100%{opacity:0}}
+@keyframes l8{0%,23.06%{opacity:0}23.56%,96%{opacity:1}100%{opacity:0}}
+@keyframes l9{0%,26.11%{opacity:0}26.61%,96%{opacity:1}100%{opacity:0}}
+@keyframes l10{0%,29.17%{opacity:0}29.67%,96%{opacity:1}100%{opacity:0}}
+@keyframes l11{0%,29.17%{opacity:0}29.67%,96%{opacity:1}100%{opacity:0}}
+@keyframes l12{0%,32.22%{opacity:0}32.72%,96%{opacity:1}100%{opacity:0}}
+@keyframes l13{0%,35.28%{opacity:0}35.78%,96%{opacity:1}100%{opacity:0}}
+@keyframes l14{0%,38.33%{opacity:0}38.83%,96%{opacity:1}100%{opacity:0}}
+@keyframes l15{0%,41.39%{opacity:0}41.89%,96%{opacity:1}100%{opacity:0}}
+@keyframes l16{0%,44.44%{opacity:0}44.94%,96%{opacity:1}100%{opacity:0}}
+@keyframes l17{0%,47.50%{opacity:0}48.00%,96%{opacity:1}100%{opacity:0}}
+@keyframes l18{0%,50.56%{opacity:0}51.06%,96%{opacity:1}100%{opacity:0}}
+@keyframes l19{0%,53.61%{opacity:0}54.11%,96%{opacity:1}100%{opacity:0}}
+@keyframes l20{0%,53.61%{opacity:0}54.11%,96%{opacity:1}100%{opacity:0}}
+@keyframes l21{0%,56.67%{opacity:0}57.17%,96%{opacity:1}100%{opacity:0}}
+@media (prefers-reduced-motion:reduce){text{animation:none!important;opacity:1}}
+</style>
+<rect width="748" height="538" rx="10" fill="#0d1117"/>
+<circle cx="22" cy="20" r="6" fill="#ff5f57"/><circle cx="42" cy="20" r="6" fill="#febc2e"/><circle cx="62" cy="20" r="6" fill="#28c840"/>
+<text x="24" y="52" style="animation:l0 18s linear infinite">$ npm run demo</text>
+<text x="24" y="73" style="animation:l1 18s linear infinite"></text>
+<text x="24" y="94" style="animation:l2 18s linear infinite"><tspan class="b">Issue a $50.00 credit to acct_42. The ledger commits it, then the response is lost.</tspan></text>
+<text x="24" y="115" style="animation:l3 18s linear infinite"></text>
+<text x="24" y="136" style="animation:l4 18s linear infinite"><tspan class="b">NAIVE</tspan><tspan class="d">   try { post() } catch { retry() }</tspan></text>
+<text x="24" y="157" style="animation:l5 18s linear infinite">  attempt 1   POST /credits   ledger committed cr_1</text>
+<text x="24" y="178" style="animation:l6 18s linear infinite">              <tspan class="r">response lost</tspan> <tspan class="d">(other side closed)</tspan>  → retry</text>
+<text x="24" y="199" style="animation:l7 18s linear infinite">  attempt 2   POST /credits   ledger committed cr_2</text>
+<text x="24" y="220" style="animation:l8 18s linear infinite">              201 Created</text>
+<text x="24" y="241" style="animation:l9 18s linear infinite">  ledger: <tspan class="b">2</tspan> credits  <tspan class="r">✗ customer credited twice</tspan></text>
+<text x="24" y="262" style="animation:l10 18s linear infinite"></text>
+<text x="24" y="283" style="animation:l11 18s linear infinite"><tspan class="b">CORROBO</tspan><tspan class="d"> execute → observe → reconcile → recover</tspan></text>
+<text x="24" y="304" style="animation:l12 18s linear infinite">  execute   POST /credits   ledger committed cr_3</text>
+<text x="24" y="325" style="animation:l13 18s linear infinite">            <tspan class="r">response lost</tspan> <tspan class="d">(other side closed)</tspan>  → not assumed failed</text>
+<text x="24" y="346" style="animation:l14 18s linear infinite">  observe   GET /credits?reference=…   1 credit found</text>
+<text x="24" y="367" style="animation:l15 18s linear infinite">  reconcile <tspan class="g">APPLIED</tspan></text>
+<text x="24" y="388" style="animation:l16 18s linear infinite">  recover   <tspan class="g">COMPLETE</tspan>   no retry</text>
+<text x="24" y="409" style="animation:l17 18s linear infinite">  run again <tspan class="g">COMPLETE</tspan>   no second POST</text>
+<text x="24" y="430" style="animation:l18 18s linear infinite">  ledger: <tspan class="b">1</tspan> credit   <tspan class="g">✓ credited once</tspan></text>
+<text x="24" y="451" style="animation:l19 18s linear infinite"></text>
+<text x="24" y="472" style="animation:l20 18s linear infinite"><tspan class="d">Credit counts are read from the ledger's own API, not from corrobo's records.</tspan></text>
+<text x="24" y="493" style="animation:l21 18s linear infinite"><tspan class="d">Lost before commit, or landing late? See tests/timeout-demo.test.ts.</tspan></text>
+</svg>

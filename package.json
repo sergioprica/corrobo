@@ -55,6 +55,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "demo": "tsx examples/timeout-after-write/demo.ts",
+    "demo:svg": "tsx scripts/render-demo-svg.ts",
     "example:rest": "tsx examples/rest/demo.ts",
     "example:stripe": "tsx examples/stripe-refund/demo.ts",
     "example:stripe:live-smoke": "tsx examples/stripe-refund/live-smoke.ts",

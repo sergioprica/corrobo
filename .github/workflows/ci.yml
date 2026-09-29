@@ -49,6 +49,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Timeout-after-write demo (exits non-zero if its proof fails)
+        run: npm run demo
+
       - name: Generic REST example smoke test
         run: npm run example:rest
 
