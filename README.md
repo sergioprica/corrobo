@@ -7,7 +7,7 @@
 
 Your code issued a refund, sent a message, opened a ticket, or merged a PR, and the connection dropped before the answer came back. Maybe it failed. Maybe the provider did it and only the response got lost. Retry blindly and you might do it twice.
 
-corrobo is a small TypeScript library for that moment. It records the operation before making the call, then asks the external system what actually happened, and only does it again when the evidence says it didn't happen.
+corrobo is a small TypeScript library for that moment. It records the operation before making the call, then asks the external system what actually happened, and decides from that evidence whether doing it again is safe.
 
 ```
 execute  →  observe  →  reconcile  →  recover
@@ -74,9 +74,9 @@ async function main() {
 }
 ```
 
-`execute()` threw, but corrobo didn't treat that as "not refunded": it asked, found the refund, and finished. Call `runEffect` again with the same `identity` (a retry loop, a restarted worker) and it returns the recorded result instead of refunding again. A new refund needs a new identity.
+`execute()` threw, but corrobo didn't treat that as "not refunded": it asked, found the refund, and finished. Call `runEffect` again with the same store and `identity` (say, from a retry loop) and it returns the recorded result instead of refunding again. A new refund needs a new identity.
 
-`InMemoryStore` is for trying things out. For anything where a restart or a second worker matters, use [`PostgresStore`](#in-production-postgresstore).
+`InMemoryStore` is for trying things out: it forgets everything when the process exits, so a restarted worker would see the refund as new. For anything where a restart or a second worker matters, use [`PostgresStore`](#in-production-postgresstore).
 
 ## What corrobo tells you
 
@@ -87,12 +87,12 @@ Two answers, kept separate on purpose: what the evidence shows, and what's safe 
 | `APPLIED` | The external system shows the intended effect | `COMPLETE` |
 | `NOT_APPLIED` | It shows the effect didn't happen | `RETRY` if your policy allows and a late landing is ruled out, otherwise `INVESTIGATE` |
 | `CONFLICTED` | The world changed under the plan (already refunded, stale version) | `REPLAN` with a new identity |
-| `PENDING` | Accepted, not final yet | none yet: call again later; corrobo re-checks, never re-executes |
+| `PENDING` | Accepted, not final yet | none yet: call again later; while it stays `PENDING`, corrobo re-checks instead of re-executing |
 | `UNKNOWN` | It couldn't find out | `INVESTIGATE`, never a blind retry |
 
 Plus `REVIEW`: an optional `authorize()` hook can require human sign-off *before* anything is executed; a reviewer can approve or reject.
 
-**Requests can land late.** A timed-out request isn't undone, it's just unanswered, and it can still be applied after corrobo first looks. So a `NOT_APPLIED` after a failed call only turns into a retry once your declared `maxInFlightMs` has passed, and corrobo checks once more before retrying. If you don't declare it, the answer is `INVESTIGATE`. Details: [spec §O](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
+**Requests can land late.** A timed-out request isn't undone, it's just unanswered, and it can still be applied after corrobo first looks. So when a failed call is followed by `NOT_APPLIED`, the `RETRY` comes with a `retryNotBefore` time (your declared `maxInFlightMs` after the attempt started): calling earlier does nothing, and calling after it makes corrobo check once more before it executes again. If you don't declare `maxInFlightMs`, the answer is `INVESTIGATE`. Details: [spec §O](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
 
 ## Idempotency keys and durable workflows
 

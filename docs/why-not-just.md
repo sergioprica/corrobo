@@ -12,7 +12,7 @@ Checked against current official docs on 2026-09-29.
 
 **Where ambiguity remains:** POST charge -> provider commits -> TCP timeout before response -> catch block retries -> second charge. The exception only says the response was lost; it does not say the write failed.
 
-**How corrobo composes with it:** corrobo still permits RETRY, but only after evidence says NOT_APPLIED and the operation's contract says retrying is safe. If the failed request might still land, NOT_APPLIED is retried only after `maxInFlightMs` and a re-check; UNKNOWN becomes INVESTIGATE, not another attempt.
+**How corrobo composes with it:** corrobo still permits RETRY, but only after evidence says NOT_APPLIED and the operation's contract says retrying is safe. If the failed request might still land, the RETRY carries a `retryNotBefore` time: nothing executes before it, and corrobo re-checks after it before executing. UNKNOWN becomes INVESTIGATE, not another attempt.
 
 ## 2. Why not just use an idempotency key?
 

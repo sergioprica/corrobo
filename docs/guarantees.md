@@ -15,25 +15,25 @@ Often it is, and you should use one when your provider supports it (row 1.7). Th
 Temporal, Restate, Trigger.dev, Inngest, Vercel Workflow and DBOS make your *process* durable: a crashed step runs again. A step that crashes after its external write but before its result is recorded therefore runs its write again, which is why each of them tells you to make steps idempotent. corrobo goes inside that step. → [why-not-just](why-not-just.md)
 
 **What happens after a timeout?**
-corrobo does not assume failure. It observes the external system. Found → `APPLIED` / `COMPLETE`. Not found → `NOT_APPLIED`, but the timed-out request may still land, so a retry waits until your declared `maxInFlightMs` has passed and corrobo checks once more first; without `maxInFlightMs` the answer is `INVESTIGATE`. → rows 1.2–1.5
+corrobo does not assume failure. It observes the external system. Found → `APPLIED` / `COMPLETE`. Not found → `NOT_APPLIED`, but the timed-out request may still land, so the `RETRY` carries a `retryNotBefore` time: nothing is executed before it, and after it corrobo checks once more before executing. Without a declared `maxInFlightMs` the answer is `INVESTIGATE`. → rows 1.2–1.5
 
 **What happens when observation fails?**
 `UNKNOWN` → `INVESTIGATE`. corrobo never turns "couldn't check" into "didn't happen". → rows 3.1–3.3
 
 **What happens when the state is still converging?**
-`PENDING`, with no next step yet. Calling again re-checks; it never re-executes. If the provider later rejects the request, it becomes `NOT_APPLIED` and follows your retry policy. → rows 4.1–4.4
+`PENDING`, with no next step yet. While it stays `PENDING`, calling again re-checks instead of re-executing. If the provider later rejects the request, it becomes `NOT_APPLIED` and follows your retry policy, which may allow one new attempt. → rows 4.1–4.4
 
 **What happens when corrobo genuinely cannot know?**
 It says so: `UNKNOWN` → `INVESTIGATE`, closed, for a person or another process to decide. That's a correct answer, not a failure mode to work around. → rows 2.6, 3.1, 6.4
 
 **What happens when two workers race?**
-With `PostgresStore`, one of them executes; the other gets the current record (or an honest "in progress") without waiting or executing. Different operations don't block each other. If the winner's database connection dies mid-call, version-checked writes and the late-landing rule still prevent a second execution. → rows 8.1–8.11
+With `PostgresStore`, one of them executes; the other gets the current record (or an honest "in progress") without waiting or executing. Different operations don't block each other. If the winner's database connection dies mid-call, version-checked writes stop it from overwriting anything, and the late-landing rule stops anyone from executing again before the declared in-flight window has passed and a re-check still finds nothing. → rows 8.1–8.11
 
 **What happens after a crash?**
 The attempt was recorded before `execute()` ran, so the restart knows it was attempted. It observes first: `APPLIED` finishes it; `NOT_APPLIED` follows the late-landing rule; `UNKNOWN` goes to a person. With `InMemoryStore`, a restart loses everything, so use `PostgresStore` wherever that matters. → rows 2.1–2.9
 
 **What does corrobo guarantee?**
-With `PostgresStore` and an `observe()` that tells the truth, corrobo will not itself cause a blind duplicate in any case in the failure matrix; every recorded next step is derived from evidence, never invented; an operation identity can't silently be reused for a different intent (with the default fingerprint; a custom `fingerprintIntent()` defines its own notion of "same"); raw thrown error objects are never persisted; nothing is sent to the maintainer.
+With `PostgresStore` and an `observe()` that tells the truth, corrobo will not itself cause a blind duplicate in any case in the failure matrix; every recovery step after execution is derived from what `observe()` found, never invented (`REVIEW` is the one exception by design: a policy gate from `authorize()` before anything runs); an operation identity can't silently be reused for a different intent (with the default fingerprint; a custom `fingerprintIntent()` defines its own notion of "same"); raw thrown error objects are never persisted; nothing is sent to the maintainer.
 
 **What does it explicitly not guarantee?**
 Exactly-once execution in general. Anything about writes made outside corrobo. A correct `observe()`: if your lookup can't prove absence (a search, an eventually consistent read) and your contract calls that `NOT_APPLIED`, corrobo will believe it (row 3.4). A correct `maxInFlightMs`: it's your bound, corrobo can't verify it. It is also not a scheduler: it doesn't decide when you call it again.
