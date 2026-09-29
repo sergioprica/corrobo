@@ -61,6 +61,9 @@ export class FakeStripeClient implements StripeClientLike {
     this.faults.set(chargeId, { ...existing, ...fault });
   }
 
+  /** Every Idempotency-Key a create() call arrived with, in order (replays included). For test assertions. */
+  readonly idempotencyKeysReceived: string[] = [];
+
   /** Real refund creations only — a cache hit on an idempotency key does not count. For test assertions. */
   get createdRefundCount(): number {
     return this.createdRefunds;
@@ -80,6 +83,7 @@ export class FakeStripeClient implements StripeClientLike {
     params: { charge: string; amount: number; reason?: string },
     idempotencyKey: string
   ): Promise<RefundLike> {
+    this.idempotencyKeysReceived.push(idempotencyKey);
     const cached = this.byIdempotencyKey.get(idempotencyKey);
     if (cached) {
       return cached;

@@ -195,6 +195,8 @@ corrobo is not "an AI skill" or an agent framework — the Skill is an optional 
 
 ## Guarantees and non-guarantees
 
+**[Failure matrix](docs/failure-matrix.md):** every failure point corrobo handles — lost responses, late landings, crashes at each boundary, failed read-backs, races, lost locks, review, identity misuse, persistence — with what's actually true, what corrobo records, whether `execute()` runs again, and the test that proves each row.
+
 corrobo **is**: a small reliability runtime for consequential side effects, framework-independent, and useful with or without LLM agents involved.
 
 corrobo is **not**: a workflow engine, a task queue, a generic agent orchestration framework, a generic exactly-once execution system, or a replacement for an API's own native idempotency support — it *composes* with native idempotency (as the Stripe example does) rather than replacing it.

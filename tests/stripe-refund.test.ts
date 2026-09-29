@@ -104,6 +104,8 @@ describe("Stripe refund example", () => {
     expect(refundId).toBeDefined();
     expect(client.getRefundState(refundId as string)).toBeDefined();
     // A single Stripe key was ever used for this logical operation, and it produced one refund.
+    expect(client.idempotencyKeysReceived.length).toBeGreaterThanOrEqual(2); // the failed create + at least one more call
+    expect(new Set(client.idempotencyKeysReceived).size).toBe(1);
     expect(client.createdRefundCount).toBe(1);
   });
 
