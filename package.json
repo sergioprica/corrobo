@@ -51,8 +51,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "demo": "tsx examples/timeout-after-write/demo.ts",
