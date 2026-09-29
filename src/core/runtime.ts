@@ -30,8 +30,17 @@ async function safetyNow(store: CoordinatedStore): Promise<string> {
   return store.now ? (await store.now()).toISOString() : nowIso();
 }
 
+/**
+ * A plain string for the persisted error message. Uses an Error's (or an Error-like thrown
+ * object's) own `message`; never serializes the thrown value itself, which can carry request
+ * headers or response bodies — that is what `error.raw` is for, and PostgresStore strips it.
+ */
 function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  if (err instanceof Error) return err.message;
+  if (err !== null && typeof err === "object" && typeof (err as { message?: unknown }).message === "string") {
+    return (err as { message: string }).message;
+  }
+  return String(err);
 }
 
 function defaultReviewReason(): ReasonCode {
@@ -376,6 +385,9 @@ export async function runEffect<Intent, Observation, Evidence>(
   contract: EffectContract<Intent, Observation, Evidence>,
   request: EffectRequest<Intent>
 ): Promise<EffectResult<Observation>> {
+  // Validates the intent before anything else happens: an intent that can't be fingerprinted
+  // faithfully (see canonicalStringify) is rejected here, never after an effect has been made.
+  fingerprintIntent(contract, request.intent);
   const lock = await store.tryAcquireLock(request.identity.id);
   if (!lock) {
     const existing = await store.getOperation(request.identity.id);

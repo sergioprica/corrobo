@@ -74,3 +74,67 @@ describe("runEffect honors a contract-provided fingerprintIntent override", () =
     expect(second.disposition).toBe("COMPLETE");
   });
 });
+
+describe("canonicalStringify is faithful to what JSON persistence keeps", () => {
+  it("different Dates fingerprint differently (they are different intents)", () => {
+    expect(canonicalStringify({ at: new Date("2026-01-01") })).not.toBe(canonicalStringify({ at: new Date("2027-01-01") }));
+  });
+
+  it("an intent fingerprints the same before and after a JSON round trip (Date vs its persisted ISO string)", () => {
+    const intent = { at: new Date("2026-01-01T00:00:00.000Z"), amount: 5, note: undefined, tags: ["a", undefined] };
+    expect(canonicalStringify(JSON.parse(JSON.stringify(intent)))).toBe(canonicalStringify(intent));
+  });
+
+  it("plain JSON intents fingerprint exactly as before (existing records keep matching)", () => {
+    const intent = { b: [1, { d: true, c: null }], a: "x" };
+    expect(canonicalStringify(intent)).toBe('{"a":"x","b":[1,{"c":null,"d":true}]}');
+  });
+
+  it("the same object referenced twice (not a cycle) is fine", () => {
+    const shared = { id: 1 };
+    expect(canonicalStringify({ a: shared, b: shared })).toBe('{"a":{"id":1},"b":{"id":1}}');
+  });
+
+  it.each([
+    ["a circular reference", () => {
+      const o: Record<string, unknown> = { a: 1 };
+      o.self = o;
+      return o;
+    }],
+    ["a function", () => ({ amount: 5, onDone: () => 1 })],
+    ["a symbol", () => ({ tag: Symbol("x") })],
+    ["a bigint", () => ({ amount: 10n })],
+    ["a Map", () => ({ m: new Map([["x", 1]]) })],
+    ["a Set", () => ({ s: new Set([1]) })]
+  ])("rejects %s with a clear TypeError naming the path", (what, make) => {
+    expect(() => canonicalStringify(make())).toThrow(TypeError);
+    expect(() => canonicalStringify(make())).toThrow(new RegExp(`intent\\.\\w+ is ${what}`));
+  });
+});
+
+describe("runEffect rejects an unpersistable intent before anything happens", () => {
+  it("circular intent: throws before execute(), and leaves no record behind", async () => {
+    const store = new InMemoryStore();
+    let executed = 0;
+    const contract: EffectContract<Record<string, unknown>, unknown, unknown> = {
+      operationType: "t",
+      capabilities: { nativeIdempotency: false, callerGeneratedIdentity: true, optimisticConcurrency: false, convergence: false },
+      retryPolicy: { maxAttempts: 1, retryOnNotApplied: false },
+      async execute() {
+        executed += 1;
+        return {};
+      },
+      async observe() {
+        return { status: "observed", data: {}, authoritative: true, source: "t", observedAt: new Date().toISOString() };
+      },
+      reconcile: () => ({ evidenceState: "APPLIED", reason: { code: "A", summary: "a" } })
+    };
+    const intent: Record<string, unknown> = { a: 1 };
+    intent.self = intent;
+    await expect(runEffect(store, contract, { identity: { id: "circ", operationType: "t" }, intent })).rejects.toThrow(
+      /intent\.self is a circular reference/
+    );
+    expect(executed).toBe(0);
+    expect(await store.getOperation("circ")).toBeNull();
+  });
+});
