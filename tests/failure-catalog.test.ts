@@ -258,6 +258,7 @@ describe("more catalog rows", () => {
   it("corrobo does not judge authority itself: reconcile() receives authoritative:false untouched", async () => {
     const store = new InMemoryStore();
     let seen: boolean | undefined;
+    let seenSource: string | undefined;
     const contract: EffectContract<Record<string, never>, { found: boolean }, unknown> = {
       operationType: "test/non-authoritative",
       capabilities: { nativeIdempotency: false, callerGeneratedIdentity: true, optimisticConcurrency: false, convergence: false },
@@ -270,12 +271,14 @@ describe("more catalog rows", () => {
       },
       reconcile({ observation }) {
         seen = observation.status === "observed" ? observation.authoritative : undefined;
+        seenSource = observation.source;
         // What a correct contract does with a read that can't prove absence:
         return { evidenceState: "UNKNOWN", reason: { code: "WEAK_READ", summary: "search results can't prove absence" } };
       }
     };
     const result = await runEffect(store, contract, { identity: { id: "na-1", operationType: contract.operationType }, intent: {} });
     expect(seen).toBe(false);
+    expect(seenSource).toBe("search index");
     expect(result.disposition).toBe("INVESTIGATE");
   });
 
@@ -297,5 +300,36 @@ describe("more catalog rows", () => {
       globalThis.fetch = realFetch;
     }
     expect(calls).toBe(0);
+  });
+
+  it("a thrown value whose message can't even be read is still recorded as a transport failure", async () => {
+    const store = new InMemoryStore();
+    const contract: EffectContract<Record<string, never>, { status: Status }, { accepted: true }> = {
+      ...asyncContract(asyncTarget()),
+      async execute() {
+        throw new Proxy(
+          {},
+          {
+            get(target, prop, receiver) {
+              if (prop === "message" || prop === Symbol.toPrimitive || prop === "toString") throw new Error("getter exploded");
+              return Reflect.get(target, prop, receiver);
+            }
+          }
+        );
+      }
+    };
+    const result = await runEffect(store, contract, { identity: { id: "proxy", operationType: contract.operationType }, intent: {} });
+    const transport = (result.attempts[0] as ResolvedAttempt).transport;
+    expect(!transport.ok && transport.error.message).toBe("(the thrown value could not be converted to a message)");
+  });
+
+  it("InMemoryStore is process-local: a new instance (a restarted process) has none of the old records", async () => {
+    const target = asyncTarget();
+    const contract = asyncContract(target);
+    const before = new InMemoryStore();
+    await runEffect(before, contract, { identity: { id: "mem-1", operationType: contract.operationType }, intent: {} });
+    expect(await before.getOperation("mem-1")).not.toBeNull();
+    const afterRestart = new InMemoryStore();
+    expect(await afterRestart.getOperation("mem-1")).toBeNull();
   });
 });

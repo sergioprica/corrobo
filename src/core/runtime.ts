@@ -1,6 +1,6 @@
 import { decideDisposition } from "./disposition";
 import type { DecideDispositionResult } from "./disposition";
-import { fingerprintIntent } from "./fingerprint";
+import { canonicalStringify, fingerprintIntent } from "./fingerprint";
 import { StoreConflictError } from "./store";
 import type { CoordinatedStore, EffectStore } from "./store";
 import type {
@@ -36,11 +36,17 @@ async function safetyNow(store: CoordinatedStore): Promise<string> {
  * headers or response bodies — that is what `error.raw` is for, and PostgresStore strips it.
  */
 function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (err !== null && typeof err === "object" && typeof (err as { message?: unknown }).message === "string") {
-    return (err as { message: string }).message;
+  // Whatever was thrown is caller-controlled and may itself throw (a getter, a Proxy, a toString
+  // that throws). Reading it must never abort the pass: the effect may already have happened.
+  try {
+    if (err !== null && typeof err === "object") {
+      const message: unknown = (err as { message?: unknown }).message; // read exactly once
+      if (typeof message === "string") return message;
+    }
+    return String(err);
+  } catch {
+    return "(the thrown value could not be converted to a message)";
   }
-  return String(err);
 }
 
 function defaultReviewReason(): ReasonCode {
@@ -385,9 +391,12 @@ export async function runEffect<Intent, Observation, Evidence>(
   contract: EffectContract<Intent, Observation, Evidence>,
   request: EffectRequest<Intent>
 ): Promise<EffectResult<Observation>> {
-  // Validates the intent before anything else happens: an intent that can't be fingerprinted
-  // faithfully (see canonicalStringify) is rejected here, never after an effect has been made.
-  fingerprintIntent(contract, request.intent);
+  // With the default fingerprint, an intent that can't be stored faithfully as JSON (see
+  // canonicalStringify) is rejected here, before anything else happens — never after an effect.
+  // A contract-supplied fingerprintIntent() takes responsibility for its own intents instead.
+  if (!contract.fingerprintIntent) {
+    canonicalStringify(request.intent);
+  }
   const lock = await store.tryAcquireLock(request.identity.id);
   if (!lock) {
     const existing = await store.getOperation(request.identity.id);

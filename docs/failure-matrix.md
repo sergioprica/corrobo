@@ -18,20 +18,21 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 1.4 | Request lands **late**, after corrobo first looked | Applied, but later | First `NOT_APPLIED` → `RETRY` (deferred); the re-check before retrying finds `APPLIED` → `COMPLETE` | No | No | Call again after `retryNotBefore` | T7, T8 |
 | 1.5 | Transport failure, contract declares no `maxInFlightMs` | Unknown whether it will land | `NOT_APPLIED` → `INVESTIGATE` (`IN_FLIGHT_NOT_RULED_OUT`) | No | No | Decide manually, or declare `maxInFlightMs` | T9, T10 |
 | 1.6 | `execute()` returned a response, but the effect isn't there | Not applied, request finished | `NOT_APPLIED` → `RETRY` immediately (per retry policy) | Yes, once | No | Nothing | T13, T42 |
-| 1.7 | Transport failure with provider-side idempotency (same key every attempt) | Either; the provider deduplicates | Contract declares `maxInFlightMs: 0`; retry is immediate and the provider returns the original result | Yes, deduplicated by the provider | No, within the provider's key retention | Keep the key stable per operation. **Assumes:** the provider really deduplicates on it | T14, T15, T92 |
+| 1.7 | Transport failure with provider-side idempotency | Either; the provider deduplicates | The contract sends one key on every attempt and in its read-back, so a replay returns the original result instead of a second effect; with `maxInFlightMs: 0` the retry decision is immediate | Possibly, deduplicated by the provider | No, within the provider's key retention | Keep the key stable per operation. **Assumes:** the provider really deduplicates on it | T14, T15, T92 |
 
 ## 2. Crash boundaries
 
 | # | Failure | What's actually true | corrobo records | `execute()` again? | Duplicate? | You do | Proof |
 |---|---|---|---|---|---|---|---|
-| 2.1 | Crash before `execute()` is called | Nothing applied | The attempt is already reserved, so a restart never mistakes it for "never attempted" | Only via 2.3/2.4 rules | No | Run again | T16, T17 |
+| 2.1 | Crash at any point after the attempt starts | Depends on when | The attempt is reserved before `execute()` runs, so a restart finds a reservation, never an empty record. What the restart then does is rows 2.2–2.6 | See 2.2–2.6 | No | Run again | T16, T17 |
 | 2.2 | Crash after the effect, before the outcome is saved | Effect applied | Restart observes first: `APPLIED` → `COMPLETE`, resolved in place | No | No | Run again | T18 |
 | 2.3 | Crash; restart observes nothing, no `maxInFlightMs` | Unknown whether it will land | `NOT_APPLIED` → `INVESTIGATE` | No | No | Decide manually | T19 |
 | 2.4 | Crash; restart observes nothing, window already passed | Not applied | `NOT_APPLIED` → `RETRY`; the retry executes once | Once | No | Run again | T20 |
 | 2.5 | Crash; restart observes nothing inside the window; dead request lands later | Applied, late | `RETRY` deferred; the re-check finds `APPLIED` → `COMPLETE` | No | No | Run again after `retryNotBefore` | T21 |
 | 2.6 | Crash; restart can't observe | Unknown | `UNKNOWN` → `INVESTIGATE` | No | No | Investigate | T22 |
 | 2.7 | `execute()` succeeds but returns data the store can't serialize (e.g. circular SDK object in Postgres) | Effect applied | That pass throws; the reservation survives; the next run observes: `APPLIED` → `COMPLETE` | No | No | Run again; return plain data from `execute()` | T23 |
-| 2.8 | Process restart (durable store) | — | Operation, intent and evidence reload from Postgres | — | — | Use `PostgresStore`; `InMemoryStore` loses everything on restart | T24, T34 |
+| 2.8 | Process restart with `PostgresStore` | — | Operation, intent and evidence reload from Postgres | — | — | Nothing | T24, T34 |
+| 2.9 | Process restart with `InMemoryStore` | — | Every record is gone; corrobo no longer knows the operation was attempted | Yes — it looks new | **Yes** | Use `PostgresStore` wherever a restart matters | T101 |
 
 ## 3. Observation failures
 
@@ -65,7 +66,7 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 6.1 | Settled `NOT_APPLIED`, retry allowed, attempts left | `RETRY`; the next run makes a genuinely new attempt | Once per call | T42 |
 | 6.2 | Retry budget exhausted | `INVESTIGATE` | No | T43 |
 | 6.3 | Operation type not declared retryable | `INVESTIGATE` | No | T44 |
-| 6.4 | `UNKNOWN`, `PENDING`, `CONFLICTED`, `APPLIED` | Never configurable into `RETRY` | No | T45 |
+| 6.4 | `UNKNOWN`, `PENDING`, `CONFLICTED`, `APPLIED` | Never `RETRY`, whatever the retry policy | No | T45, T102, T103, T104 |
 | 6.5 | Called again after the operation closed | Recorded result returned | No | T46, T100 |
 
 ## 7. Review
@@ -102,7 +103,9 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 9.3 | Same intent, different key order | Same operation | No | T69 |
 | 9.4 | Intent with irrelevant fields (nonces) | Use `fingerprintIntent()` to ignore them | No | T70 |
 | 9.5 | Intent containing a `Date` | Stored as ISO string; matches itself after a Postgres round trip; a different date is a conflict | No | T71 |
-| 9.6 | Circular, function, symbol, BigInt, Map, Set in an intent | `TypeError` naming the path, before anything is written or executed | No | T72, T73, T74 |
+| 9.6 | Intent JSON can't store faithfully: circular, function, symbol, BigInt, Map, Set, typed array, getter, or `undefined` itself | `TypeError` naming the path, before anything is written or executed | No | T72, T73, T74, T105, T106, T107 |
+| 9.8 | Intents that JSON stores identically: `{ a: undefined }` / `{}`, `NaN` / `null`, a `Date` / its ISO string | The same operation — identity follows what is stored | No | T108, T109, T110 |
+| 9.9 | Contract supplies its own `fingerprintIntent()` | corrobo uses it and does not apply the default JSON rules to that intent; the store must still be able to persist the intent | No | T70, T111 |
 | 9.7 | A new identity | A genuinely new operation | Yes (it's new) | T75 |
 
 ## 10. Persistence and privacy
@@ -111,10 +114,10 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 |---|---|---|---|
 | 10.1 | `execute()`/`observe()` throws an error carrying secrets or PII in `error.raw` | `PostgresStore` never persists `error.raw` (transport and observation) | T76, T77 |
 | 10.2 | Your own data has a field named `raw` | Not stripped | T78 |
-| 10.3 | Thrown value is Error-like (`{ message, headers }`) | Only the `message` string is recorded | T79 |
-| 10.4 | Thrown value isn't an Error (string, `undefined`, `null`, number, object with functions) | Recorded as a transport failure; the pass never crashes | T87, T88 |
+| 10.3 | Thrown value is Error-like (`{ message, headers }`) | The recorded message is its own string `message` and nothing else of it; the thrown object itself stays in memory only (`error.raw`), never persisted by `PostgresStore` (10.1) | T79 |
+| 10.4 | Thrown value isn't an Error (string, `undefined`, `null`, number, object with functions), or even its message can't be read | Recorded as a transport failure; the pass never crashes | T87, T88, T112 |
 | 10.5 | `PostgresStore` constructed without `{ acknowledgePersistence: true }` | Throws | T80, T81, T82 |
-| 10.6 | `InMemoryStore` | No acknowledgement, no persistence beyond the process | T83 |
+| 10.6 | `InMemoryStore` | No acknowledgement, no persistence beyond the process | T83, T101 |
 | 10.7 | Nested evidence, observations, reason metadata | Round-trip through Postgres exactly | T84, T85 |
 | 10.8 | Retention | No automatic expiry or deletion; retention is yours | T86 |
 | 10.9 | Upgrading from 0.2.x | `migrate()` adds `version` in place; old reserved rows recover; old transport-failure `RETRY`s are re-checked under current rules | T89, T90, T91 |
@@ -128,7 +131,7 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 | 11.1 | Provider idempotency key | Same key on every attempt of one operation; a new operation never reuses it | T92, T93 |
 | 11.2 | Idempotency replay window expired (e.g. Stripe's ~24h) | Replay refused: `UNKNOWN` → `INVESTIGATE`, never a new refund | T94 |
 | 11.3 | Stable provider id known from `execute()` | Later checks look it up directly | T95 |
-| 11.4 | Lookup only by search/listing | **Assumes:** your contract returns `UNKNOWN` when absence can't be proven — see 3.4 | T31 |
+| 11.4 | Lookup only by search/listing | **Assumes:** your contract returns `UNKNOWN` when absence can't be proven — see 3.4 | T30 |
 
 ## 12. What corrobo itself does on your machine
 
@@ -247,3 +250,15 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 - **T98** [`tests/failure-catalog.test.ts`](../tests/failure-catalog.test.ts) — "the core and InMemoryStore make no network calls of their own"
 - **T99** [`tests/failure-catalog.test.ts`](../tests/failure-catalog.test.ts) — "package.json declares no install-time scripts and only pg as a runtime dependency"
 - **T100** [`tests/timeout-demo.test.ts`](../tests/timeout-demo.test.ts) — "running the same operation repeatedly never adds a credit"
+- **T101** [`tests/failure-catalog.test.ts`](../tests/failure-catalog.test.ts) — "InMemoryStore is process-local: a new instance (a restarted process) has none of the old records"
+- **T102** [`tests/disposition.test.ts`](../tests/disposition.test.ts) — "APPLIED -> COMPLETE"
+- **T103** [`tests/disposition.test.ts`](../tests/disposition.test.ts) — "CONFLICTED -> REPLAN"
+- **T104** [`tests/disposition.test.ts`](../tests/disposition.test.ts) — "PENDING cannot be configured into RETRY — it never carries a disposition"
+- **T105** [`tests/fingerprint.test.ts`](../tests/fingerprint.test.ts) — "an intent containing %s is rejected before any record or execute()"
+- **T106** [`tests/fingerprint.test.ts`](../tests/fingerprint.test.ts) — "an own getter property is rejected: it could return something different when the intent is stored"
+- **T107** [`tests/fingerprint.test.ts`](../tests/fingerprint.test.ts) — "a root intent that is %s is rejected"
+- **T108** [`tests/fingerprint.test.ts`](../tests/fingerprint.test.ts) — "intents JSON stores identically are the same intent (documented equivalences)"
+- **T109** [`tests/fingerprint.test.ts`](../tests/fingerprint.test.ts) — "%s: fingerprint before == after persistence"
+- **T110** [`tests/fingerprint.test.ts`](../tests/fingerprint.test.ts) — "an intent fingerprints the same before and after a JSON round trip (Date vs its persisted ISO string)"
+- **T111** [`tests/fingerprint.test.ts`](../tests/fingerprint.test.ts) — "a custom fingerprintIntent takes responsibility: corrobo does not apply the default rules to that intent"
+- **T112** [`tests/failure-catalog.test.ts`](../tests/failure-catalog.test.ts) — "a thrown value whose message can't even be read is still recorded as a transport failure"
