@@ -13,15 +13,13 @@ corrobo is a small TypeScript library for that moment. It records the operation 
 execute  →  observe  →  reconcile  →  recover
 ```
 
-![npm run demo: after a lost response, the naive retry credits the account twice; corrobo checks the ledger and credits once](docs/assets/timeout-after-write.svg)
+![npm run demo: after a lost response, the naive retry credits the account twice; corrobo checks the ledger and credits once](https://raw.githubusercontent.com/vidithsalla/corrobo/main/docs/assets/timeout-after-write.svg)
 
 That's `npm run demo` in this repo: a real local HTTP ledger commits a credit, then drops the connection. Both counts come from the ledger's own API, not from corrobo.
 
 ```
 npm install corrobo
 ```
-
-> **Heads-up:** this README describes corrobo **0.3.0**, the next release. npm currently serves 0.2.1, which doesn't have `maxInFlightMs` or version-checked stores, so the quickstart below won't compile against it yet. Until 0.3.0 is published, try it from this repo (`npm run quickstart`). Upgrading from 0.2.x: see the [changelog](CHANGELOG.md).
 
 ## Quickstart
 
