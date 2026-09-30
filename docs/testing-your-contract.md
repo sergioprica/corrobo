@@ -26,14 +26,14 @@ Each scenario starts from a reset target and counts effects **on your fake** —
 |---|---|---|
 | `normal` | Nothing goes wrong | 1 effect, `APPLIED`, one `execute()` |
 | `response-lost-after-commit` | The write lands, the response is lost | 1 effect, `APPLIED`, no second `execute()` |
-| `request-lost-before-commit` | The write never reaches the target | 1 effect and `APPLIED` after the window, or 0 and `INVESTIGATE` if no `maxInFlightMs` |
+| `request-lost-before-commit` | The write never reaches the target | 1 effect and `APPLIED` after the window; 0 and `INVESTIGATE` only if there's no `maxInFlightMs` or the retry policy forbids retrying |
 | `late-landing` | The write is dropped, then lands `target.lateLandingMs` later | 1 effect; fails if `maxInFlightMs` is shorter than how late your target can land a request |
 | `read-fails-after-lost-response` | The write lands, the response is lost, and the read fails | First answer is `UNKNOWN` (a failed read proves nothing); 1 effect |
 | `crash-after-effect-before-save` | The process dies after the write, before saving the outcome | After restart: `APPLIED`, no second `execute()` |
-| `crash-before-execute` | The process dies after reserving the attempt | After restart: 1 effect and `APPLIED`, or 0 and `INVESTIGATE` |
+| `crash-before-execute` | The process dies after reserving the attempt | After restart: 1 effect and `APPLIED`; 0 and `INVESTIGATE` only without `maxInFlightMs` or a retry policy that allows it |
 | `concurrent-same-identity` | Two callers run the same operation at once | 1 effect, one `execute()` |
 | `identity-reuse-different-intent` | The same id is reused for a different intent | It throws; nothing changes at the target |
-| `pending-then-settled` / `-rejected` | The target accepts the write as pending | No second `execute()` while pending; settles to 1 effect, or a rejection retries at most once |
+| `pending-then-settled` / `-rejected` | The target accepts the write as pending | No second `execute()` while pending; settles to 1 effect, or after a rejection retries once (if the retry policy allows) to 1 effect |
 | `neighbor-effect-isolation` | Another operation's effect already exists | `observe()` doesn't mistake it for this operation's |
 
 Time windows pass on the store's virtual clock, which starts at the current time and only moves forward, so nothing sleeps. corrobo's own timing (attempt start, `maxInFlightMs`, `retryNotBefore`) follows that clock. If your contract reads the time itself (for example `Date.now()` against `attemptStartedAt`), it sees real time, which is never ahead of the store's. Crashes are simulated at store writes, with records surviving the way they would in `PostgresStore`.

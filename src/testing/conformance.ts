@@ -210,6 +210,25 @@ async function runScenario<Intent>(scenario: ScenarioName, options: VerifyOption
       await run.once();
     }
   };
+  const policy = options.contract.retryPolicy;
+  const retryAllowed = policy.retryOnNotApplied && policy.maxAttempts >= 2;
+  /**
+   * After a write that provably never happened, the contract must recover (1 effect, APPLIED)
+   * unless it deliberately can't: no retry allowed by its policy, or — when the failed request
+   * could still land — no maxInFlightMs declared. Only then is 0 effects + INVESTIGATE a pass.
+   */
+  const recovered = (n: number, windowMatters: boolean): [boolean, string] => {
+    const conservativeAllowed = !retryAllowed || (windowMatters && window === undefined);
+    const ok =
+      (n === 1 && run.last?.evidenceState === "APPLIED") ||
+      (conservativeAllowed && n === 0 && run.last?.disposition === "INVESTIGATE");
+    const expected = conservativeAllowed
+      ? "either 1 effect and APPLIED, or 0 effects and INVESTIGATE"
+      : "1 effect and APPLIED (the contract declares a retry policy" +
+        (windowMatters ? " and maxInFlightMs" : "") +
+        ", so a write that provably never happened should be retried)";
+    return [ok, `expected ${expected}; got ${n} and ${run.last?.evidenceState}/${run.last?.disposition}`];
+  };
   const noWindowNote = () =>
     run.last?.disposition === "INVESTIGATE" && window === undefined
       ? run.notes.push("no maxInFlightMs declared: ends in INVESTIGATE for a person to decide (conservative, allowed)")
@@ -241,10 +260,7 @@ async function runScenario<Intent>(scenario: ScenarioName, options: VerifyOption
         const n = await effects();
         expect(n <= 1, `expected at most 1 effect, found ${n}`);
         noWindowNote();
-        expect(
-          (n === 1 && run.last?.evidenceState === "APPLIED") || (n === 0 && run.last?.disposition === "INVESTIGATE"),
-          `expected either 1 effect and APPLIED, or 0 effects and INVESTIGATE; got ${n} and ${run.last?.evidenceState}/${run.last?.disposition}`
-        );
+        expect(...recovered(n, true));
         break;
       }
       case "late-landing": {
@@ -306,10 +322,7 @@ async function runScenario<Intent>(scenario: ScenarioName, options: VerifyOption
         const n = await effects();
         expect(n <= 1, `expected at most 1 effect, found ${n}`);
         noWindowNote();
-        expect(
-          (n === 1 && run.last?.evidenceState === "APPLIED") || (n === 0 && run.last?.disposition === "INVESTIGATE"),
-          `expected either 1 effect and APPLIED, or 0 effects and INVESTIGATE; got ${n} and ${run.last?.evidenceState}/${run.last?.disposition}`
-        );
+        expect(...recovered(n, true));
         break;
       }
       case "concurrent-same-identity": {
@@ -343,9 +356,10 @@ async function runScenario<Intent>(scenario: ScenarioName, options: VerifyOption
         await followUp();
         const n = await effects();
         noWindowNote();
+        const [ok, message] = recovered(n, true);
         expect(
-          (n === 1 && run.last?.evidenceState === "APPLIED") || (n === 0 && run.last?.disposition === "INVESTIGATE"),
-          `with another operation's effect present, expected 1 effect and APPLIED, or 0 and INVESTIGATE; got ${n} and ${run.last?.evidenceState}/${run.last?.disposition}` +
+          ok,
+          `with another operation's effect present, ${message}` +
             (n === 0 && run.last?.evidenceState === "APPLIED" ? " — observe() seems to see other operations' effects as this one's" : "")
         );
         break;
@@ -369,10 +383,7 @@ async function runScenario<Intent>(scenario: ScenarioName, options: VerifyOption
           await followUp();
           const n = await effects();
           expect(n <= 1, `expected at most 1 effect after a rejection and retry, found ${n}`);
-          expect(
-            (n === 1 && run.last?.evidenceState === "APPLIED") || (n === 0 && run.last?.disposition === "INVESTIGATE"),
-            `expected either a successful retry (1 effect, APPLIED) or INVESTIGATE; got ${n} and ${run.last?.evidenceState}/${run.last?.disposition}`
-          );
+          expect(...recovered(n, false)); // a rejection is a finished request: no window needed
         }
         break;
       }

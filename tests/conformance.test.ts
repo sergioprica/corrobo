@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { formatConformanceReport, verifyEffectContract } from "../src/testing";
 import { correctContract, fakeLedger } from "../examples/conformance/fake-ledger";
-import { observed } from "../src/core/helpers";
+import { observed, reconciled } from "../src/core/helpers";
 import type { ConformanceTarget } from "../src/testing";
 import { createIssueCreditContract } from "../examples/timeout-after-write/contract";
 import { startLedgerServer } from "../examples/timeout-after-write/ledger-server";
@@ -174,5 +174,43 @@ describe("harness artifacts must not fail a correct contract (review fixes)", ()
     expect(report.passed).toBe(false);
     expect(report.summary).toBe("corrobo conformance: no scenarios ran (2 skipped), so nothing was verified.");
     expect(formatConformanceReport(report)).not.toMatch(/passed/);
+  });
+});
+
+describe("a contract must recover when it declares it can", () => {
+  const neverRecovers = (client: ReturnType<typeof fakeLedger>["client"], retryOnNotApplied: boolean) => {
+    const base = correctContract(client);
+    return {
+      ...base,
+      retryPolicy: { maxAttempts: 3, retryOnNotApplied },
+      // After any failed write, even a provably absent effect is reported as unknown.
+      reconcile: (input: Parameters<typeof base.reconcile>[0]) =>
+        !input.transport.ok && input.observation.status === "observed" && input.observation.data.applied === 0
+          ? reconciled("UNKNOWN", "OVERLY_CAUTIOUS", "never retries")
+          : base.reconcile(input)
+    };
+  };
+
+  it("fails request-lost-before-commit when it declares maxInFlightMs and a retry policy but never retries", async () => {
+    const { client, target } = fakeLedger();
+    const report = await verifyEffectContract({
+      contract: neverRecovers(client, true),
+      target,
+      intent: { amount: 5 },
+      scenarios: ["request-lost-before-commit"]
+    });
+    expect(report.passed).toBe(false);
+    expect(report.results[0].notes[0]).toMatch(/should be retried/);
+  });
+
+  it("passes the same contract when its retry policy says it doesn't retry (conservative by declaration)", async () => {
+    const { client, target } = fakeLedger();
+    const report = await verifyEffectContract({
+      contract: neverRecovers(client, false),
+      target,
+      intent: { amount: 5 },
+      scenarios: ["request-lost-before-commit"]
+    });
+    expect(report.passed, formatConformanceReport(report)).toBe(true);
   });
 });
