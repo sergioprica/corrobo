@@ -1,6 +1,6 @@
 # Contributing to corrobo
 
-Thanks for considering it. corrobo is small on purpose: one job (resolving external writes whose outcome is unclear), done carefully. The most useful contributions make that job more correct, easier to adopt, or better documented — real failure cases from providers you use are especially welcome.
+Thanks for considering it. See [ROADMAP.md](ROADMAP.md) for what's planned and what isn't. corrobo is small on purpose: one job (resolving external writes whose outcome is unclear), done carefully. The most useful contributions make that job more correct, easier to adopt, or better documented — real failure cases from providers you use are especially welcome.
 
 Before changing runtime code, read [docs/architecture.md](docs/architecture.md): it lists the safety invariants, where each is enforced, and which tests prove it.
 
