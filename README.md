@@ -172,6 +172,6 @@ createdb corrobo_dev_test
 CORROBO_TEST_DATABASE_URL=postgres://localhost:5432/corrobo_dev_test npm test
 ```
 
-Issues and PRs are welcome, especially real-world failure cases and provider behavior you've seen. The full technical contract is in [docs/v0.1-spec.md](docs/v0.1-spec.md). Security reports: [SECURITY.md](SECURITY.md).
+Issues and PRs are welcome, especially real-world failure cases and provider behavior you've seen. Start with [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/architecture.md](docs/architecture.md) (the safety invariants and where each is enforced); the full technical contract is in [docs/v0.1-spec.md](docs/v0.1-spec.md). Security issues: report privately ([SECURITY.md](SECURITY.md)).
 
 MIT licensed.

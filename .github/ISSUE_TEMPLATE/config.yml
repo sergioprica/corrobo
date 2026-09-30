@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security issue privately
+    url: https://github.com/vidithsalla/corrobo/security/advisories/new
+    about: Anything that could cause a duplicate effect, bypass coordination, or persist data corrobo shouldn't.
+  - name: How corrobo behaves in each failure case
+    url: https://github.com/vidithsalla/corrobo/blob/main/docs/failure-matrix.md
+    about: Check the failure matrix first — it says what corrobo does, and which test proves it.

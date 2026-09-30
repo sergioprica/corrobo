@@ -1,0 +1,22 @@
+name: Feature or example request
+description: A provider example, a failure case corrobo should handle, or an API improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: The concrete situation (which external system, which operation, what goes wrong today). Real incidents are the most persuasive.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like
+    validations:
+      required: true
+  - type: textarea
+    id: provider
+    attributes:
+      label: What the provider guarantees
+      description: For provider examples — does it support idempotency keys (for how long)? can you look a write up by your own id? can reads lag or fail?

@@ -1,0 +1,41 @@
+name: Bug report
+description: corrobo did something wrong after a timeout, crash, race, failed read, or elsewhere.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this could cause a duplicate effect, bypass same-identity coordination, or persist data corrobo shouldn't, please report it privately instead: https://github.com/vidithsalla/corrobo/security/advisories/new
+  - type: textarea
+    id: sequence
+    attributes:
+      label: What happened, step by step
+      description: What the external system did, what corrobo returned (evidenceState, disposition), and whether execute() ran again. A minimal contract + fake that reproduces it is the most useful thing you can include.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: If a row in docs/failure-matrix.md covers this case, which one?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: corrobo version
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: store
+    attributes:
+      label: Store
+      options: [PostgresStore, InMemoryStore, custom EffectStore]
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Node version, Postgres version (if relevant), TypeScript version and module resolution, workflow engine if any.
