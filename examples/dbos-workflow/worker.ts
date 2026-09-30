@@ -17,6 +17,7 @@ const [mode, phase, workflowId] = process.argv.slice(2);
 const ledgerUrl = required("LEDGER_URL");
 const appDatabaseUrl = required("DATABASE_URL"); // corrobo's operation records live here
 const systemDatabaseUrl = required("DBOS_SYSTEM_DATABASE_URL"); // DBOS's own checkpoints live here
+const systemDatabaseSchemaName = required("DBOS_SYSTEM_SCHEMA"); // one per demo run, so no other run's workflows get recovered
 
 const intent = { accountId: "acct_7", amountCents: 1_000 };
 const pool = new Pool({ connectionString: appDatabaseUrl });
@@ -31,9 +32,12 @@ async function naiveCredit(id: string) {
   return { credit: ((await res.json()) as { id: string }).id };
 }
 
-async function corroboCredit(id: string) {
+/** One stable identity per logical external write: the workflow id plus which write it is. */
+export const creditIdentity = (workflowId: string) => `${workflowId}:issue-credit`;
+
+async function corroboCredit(workflowId: string) {
   const store = new PostgresStore(pool, { acknowledgePersistence: true });
-  const result = await runEffect(store, createIssueCreditContract(ledgerUrl), { identity: id, intent });
+  const result = await runEffect(store, createIssueCreditContract(ledgerUrl), { identity: creditIdentity(workflowId), intent });
   return { evidence: result.evidenceState, next: result.disposition };
 }
 
@@ -45,7 +49,7 @@ const issueCredit = DBOS.registerWorkflow(
 
 async function main() {
   await PostgresStore.migrate(pool);
-  DBOS.setConfig({ name: "corrobo-dbos-example", systemDatabaseUrl, logLevel: "error" });
+  DBOS.setConfig({ name: "corrobo-dbos-example", systemDatabaseUrl, systemDatabaseSchemaName, logLevel: "error" });
   await DBOS.launch(); // on "recover", this is where DBOS picks the pending workflow back up
 
   const handle =
