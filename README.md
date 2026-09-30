@@ -21,8 +21,6 @@ That's `npm run demo` in this repo: a real local HTTP ledger commits a credit, t
 npm install corrobo
 ```
 
-> **Heads-up:** this README describes corrobo **0.3.0**, the next release. npm currently serves 0.2.1, which doesn't have `maxInFlightMs` or version-checked stores, so the quickstart below won't compile against it yet. Until 0.3.0 is published, try it from this repo (`npm run quickstart`). Upgrading from 0.2.x: see the [changelog](CHANGELOG.md).
-
 ## Quickstart
 
 Wrap one consequential call in an *effect contract*: how to do it, how to check it, and how to judge what you see. Here `payments` is your API client (in the runnable version, [`examples/quickstart`](examples/quickstart), it's a stand-in that loses the response after refunding).
