@@ -221,12 +221,14 @@ describe("static guarantees of the shipped source", () => {
     }
   });
 
-  it("package.json declares no install-time scripts and only pg as a runtime dependency", () => {
+  it("package.json declares no install-time scripts and no runtime dependencies (pg is an optional peer)", () => {
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     for (const hook of ["preinstall", "install", "postinstall", "prepare", "preprepare", "postprepare"]) {
       expect(pkg.scripts?.[hook], hook).toBeUndefined();
     }
-    expect(Object.keys(pkg.dependencies ?? {})).toEqual(["pg"]);
+    expect(Object.keys(pkg.dependencies ?? {})).toEqual([]);
+    expect(pkg.peerDependencies).toEqual({ pg: ">=8" });
+    expect(pkg.peerDependenciesMeta).toEqual({ pg: { optional: true } });
   });
 });
 

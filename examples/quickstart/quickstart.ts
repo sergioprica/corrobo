@@ -5,13 +5,10 @@ import { createPaymentsApi } from "./payments-api";
 const payments = createPaymentsApi(); // your real API client goes here
 
 // #region readme
-import { runEffect, InMemoryStore, type EffectContract } from "corrobo";
+import { runEffect, InMemoryStore, defineContract, observed, reconciled } from "corrobo";
 
-type RefundIntent = { orderId: string; amountCents: number };
-
-const refundOrder: EffectContract<RefundIntent, { found: number }, unknown> = {
+const refundOrder = defineContract<{ orderId: string; amountCents: number }>()({
   operationType: "payments/refund",
-  capabilities: { nativeIdempotency: false, callerGeneratedIdentity: true, optimisticConcurrency: false, convergence: false },
   retryPolicy: { maxAttempts: 3, retryOnNotApplied: true },
   maxInFlightMs: 10_000, // your request timeout + how long the API may take to apply a request
 
@@ -19,32 +16,24 @@ const refundOrder: EffectContract<RefundIntent, { found: number }, unknown> = {
   execute: ({ intent, identity }) => payments.createRefund({ ...intent, reference: identity.id }),
 
   // 2. Ask the API what is actually true. Never infer it from execute()'s outcome.
-  observe: async ({ identity }) => ({
-    status: "observed",
-    data: { found: (await payments.findRefunds(identity.id)).length },
-    authoritative: true,
-    source: "payments.findRefunds",
-    observedAt: new Date().toISOString()
-  }),
+  observe: async ({ identity }) =>
+    observed((await payments.findRefunds(identity.id)).length, { source: "payments.findRefunds", authoritative: true }),
 
   // 3. Compare what you intended with what you observed.
   reconcile: ({ observation }) => {
-    if (observation.status !== "observed") {
-      return { evidenceState: "UNKNOWN", reason: { code: "NO_READ", summary: "Could not read refunds." } };
-    }
-    return observation.data.found === 0
-      ? { evidenceState: "NOT_APPLIED", reason: { code: "NO_REFUND", summary: "No refund exists." } }
-      : observation.data.found === 1
-        ? { evidenceState: "APPLIED", reason: { code: "REFUNDED", summary: "Exactly one refund exists." } }
-        : { evidenceState: "CONFLICTED", reason: { code: "DUPLICATES", summary: "More than one refund exists." } };
+    if (observation.status !== "observed") return reconciled("UNKNOWN", "NO_READ", "Could not read refunds.");
+    const found = observation.data;
+    if (found === 0) return reconciled("NOT_APPLIED", "NO_REFUND", "No refund exists.");
+    if (found === 1) return reconciled("APPLIED", "REFUNDED", "Exactly one refund exists.");
+    return reconciled("CONFLICTED", "DUPLICATES", `${found} refunds exist.`);
   }
-};
+});
 
 async function main() {
   payments.loseNextResponse(); // the refund goes through, but the response is lost
 
   const result = await runEffect(new InMemoryStore(), refundOrder, {
-    identity: { id: "refund-order-1001", operationType: refundOrder.operationType },
+    identity: "refund-order-1001",
     intent: { orderId: "1001", amountCents: 5_000 }
   });
 

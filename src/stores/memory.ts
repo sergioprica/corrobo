@@ -135,7 +135,7 @@ export class InMemoryStore implements EffectStore {
   ): Promise<OperationRecord> {
     return this.write(identityId, expectedVersion, (record) => {
       if (record.attempts.length === 0) {
-        throw new Error(`corrobo: no attempt to update for operation "${identityId}"`);
+        throw new Error(`corrobo: operation "${identityId}" has no attempt to update (reserve one first; runEffect() always does)`);
       }
       record.attempts[record.attempts.length - 1] = attempt;
       record.status = status;
@@ -174,7 +174,10 @@ export class InMemoryStore implements EffectStore {
   private mustGet(identityId: string): OperationRecord {
     const record = this.records.get(identityId);
     if (!record) {
-      throw new Error(`corrobo: unknown operation identity "${identityId}"`);
+      throw new Error(
+        `corrobo: no operation "${identityId}" in this store. Store write methods are called by runEffect() on ` +
+          `operations it created; if you're calling them directly, create the operation first.`
+      );
     }
     return record;
   }
