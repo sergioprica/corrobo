@@ -7,7 +7,14 @@ import { describe, expect, it } from "vitest";
  * `#anchor` at a heading that exists (GitHub's slug rules), so the docs can't quietly rot.
  */
 const root = join(__dirname, "..");
-const docs = ["README.md", ...readdirSync(join(root, "docs")).filter((f) => f.endsWith(".md")).map((f) => `docs/${f}`)];
+const docs = [
+  "README.md",
+  "CONTRIBUTING.md",
+  "CHANGELOG.md",
+  "SECURITY.md",
+  "CODE_OF_CONDUCT.md",
+  ...readdirSync(join(root, "docs")).filter((f) => f.endsWith(".md")).map((f) => `docs/${f}`)
+];
 
 /** GitHub's heading anchor: lowercase, drop punctuation except hyphens and spaces, spaces to hyphens. */
 function slug(heading: string): string {
