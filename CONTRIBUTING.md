@@ -24,12 +24,12 @@ Also useful: `npm run demo`, `npm run quickstart`, `npm run conformance`, and th
 ## What a good PR looks like
 
 - **Tests first for behavior.** A change to what corrobo does after a timeout, crash, race or failed read needs a test that fails without it. Count external effects on a fake of the external system, never from corrobo's own record.
-- **Keep the failure matrix true.** If behavior in [docs/failure-matrix.md](docs/failure-matrix.md) changes, update the row and its test citation. `tests/failure-matrix-doc.test.ts` fails if a cited test is renamed or removed; `tests/docs-links.test.ts` fails on broken links in the README and `docs/`.
+- **Keep the failure matrix true.** If behavior in [docs/failure-matrix.md](docs/failure-matrix.md) changes, update the row and its test citation. `tests/failure-matrix-doc.test.ts` fails if a cited test is renamed or removed; `tests/docs-links.test.ts` fails on broken links or anchors in the README, `CONTRIBUTING.md`, `CHANGELOG.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md` and `docs/`.
 - **Claims match code.** Don't describe behavior in docs that no test shows, and never claim exactly-once, "safe", or that corrobo never handles personal data.
 - **No new runtime dependencies** without discussing it in an issue first. corrobo has zero; `pg` is an optional peer used only through the pool the caller passes in.
 - **No telemetry, logging or network calls** in `src/` — there's a test for that too.
 - **Public API changes** go in [CHANGELOG.md](CHANGELOG.md) under the next version, with upgrade steps if anything breaks.
-- Both TypeScript 5.9 (the project's) and 6 should type-check cleanly: `npm run typecheck`.
+- `npm run typecheck` must pass (it uses the project's TypeScript). If your editor runs TypeScript 6 (VS Code bundles it), it should show no errors either.
 
 ## Common contributions
 
