@@ -1,0 +1,20 @@
+{
+  "name": "corrobo-example-dbos-workflow",
+  "private": true,
+  "description": "corrobo inside a DBOS workflow step, across a real process crash.",
+  "scripts": {
+    "demo": "tsx demo.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dbos-inc/dbos-sdk": "5.2.11",
+    "corrobo": "file:../..",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

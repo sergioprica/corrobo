@@ -98,6 +98,8 @@ corrobo doesn't replace either one.
 
 > Durable execution restores your process. corrobo establishes what the external system actually did.
 
+[`examples/dbos-workflow`](examples/dbos-workflow) shows this across a real crash: a DBOS worker is `SIGKILL`ed after its step's write lands but before DBOS checkpoints it; on recovery the naive step writes again (2 credits), the step using corrobo doesn't (1).
+
 Longer answers to "why not just retry / use a key / use Temporal / use a queue / check first": **[docs/why-not-just.md](docs/why-not-just.md)**.
 
 ## In production: PostgresStore
@@ -147,6 +149,7 @@ Two things it would be wrong to claim: that corrobo never handles personal data 
 - **[`examples/timeout-after-write`](examples/timeout-after-write)** — `npm run demo`, shown above. Its tests also cover a request lost *before* commit and one that lands *late*.
 - **[`examples/quickstart`](examples/quickstart)** — `npm run quickstart`, the code above.
 - **[`examples/conformance`](examples/conformance)** — `npm run conformance`: the conformance harness against a reference fake, passing and then failing on a too-short `maxInFlightMs`.
+- **[`examples/dbos-workflow`](examples/dbos-workflow)** — corrobo inside a [DBOS](https://docs.dbos.dev) workflow step, across a real `SIGKILL` between the write and DBOS's checkpoint. Its own package (`npm install && npm run demo` in that folder, with `DATABASE_URL`).
 - **[`examples/stripe-refund`](examples/stripe-refund)** — Stripe refunds with idempotency keys and corrobo together, including the key's retention window. `npm run example:stripe` runs against a fake Stripe (no network); an optional test-mode smoke script needs `sk_test_` credentials.
 - **[`examples/rest`](examples/rest)** — a plain HTTP order cancellation: conflict, `PENDING`, `UNKNOWN`. `npm run example:rest`.
 - **[`examples/jev-refund`](examples/jev-refund)** — a model-based risk judgment feeding `authorize()` before execution, while corrobo alone decides what happened after. [Write-up](docs/jev-integration.md). `npm run example:jev` (no API key needed).

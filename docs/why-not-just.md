@@ -36,7 +36,7 @@ Checked against current official docs on 2026-09-29.
 
 **Where ambiguity remains:** A step calls a payment API, the provider commits, the process dies before the step result is durably recorded, and the engine retries the step. Restate docs issue #410 is a public example of this concern for `ctx.run`: https://github.com/restatedev/docs-restate/issues/410. Cloudflare's Workflow docs show the same gap as code guidance: check if already charged because a request can fail/retry while still committing in the payment processor: https://developers.cloudflare.com/workflows/build/rules-of-workflows/.
 
-**How corrobo composes with it:** Keep the durable workflow. Wrap only the side-effecting boundary with corrobo when you need post-write observation, settlement, and an auditable conservative disposition. If the platform step plus provider idempotency fully covers the operation, corrobo may add little beyond evidence and audit.
+**How corrobo composes with it:** Keep the durable workflow. Wrap only the side-effecting boundary with corrobo ([DBOS example](../examples/dbos-workflow), across a real crash) when you need post-write observation, settlement, and an auditable conservative disposition. If the platform step plus provider idempotency fully covers the operation, corrobo may add little beyond evidence and audit.
 
 ## 5. Why not transactions?
 

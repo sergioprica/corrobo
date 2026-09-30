@@ -51,7 +51,15 @@ export interface LedgerServer {
   close(): Promise<void>;
 }
 
-export async function startLedgerServer(): Promise<LedgerServer> {
+export interface LedgerServerOptions {
+  /**
+   * Called right after a credit is committed, before any response is sent. Lets a test do
+   * something at exactly that moment — e.g. kill the process that made the request.
+   */
+  onCommit?(credit: Credit): void;
+}
+
+export async function startLedgerServer(options: LedgerServerOptions = {}): Promise<LedgerServer> {
   const credits: Credit[] = [];
   const events: LedgerEvent[] = [];
   let loseNext = false;
@@ -73,6 +81,7 @@ export async function startLedgerServer(): Promise<LedgerServer> {
           };
           credits.push(credit); // committed: this is now true in the external world
           events.push({ kind: "committed", creditId: credit.id, reference });
+          options.onCommit?.(credit);
           return credit;
         };
         if (loseRequest) {

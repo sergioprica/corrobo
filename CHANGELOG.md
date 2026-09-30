@@ -32,6 +32,7 @@
 - Structural `PgPool` / `PgPoolClient` / `PgQueryable` types: `corrobo/postgres` no longer needs `@types/pg` to type-check.
 - Conformance harness: `verifyEffectContract()` and `formatConformanceReport()` in `corrobo/testing` run your contract against a fake of your provider through 12 failure scenarios and count effects on the fake ([guide](docs/testing-your-contract.md)); `npm run conformance`.
 - `npm run demo` (timeout-after-write against a real HTTP ledger, CI-gated), `npm run quickstart`.
+- Example: corrobo inside a DBOS workflow step across a real `SIGKILL` between the write and DBOS's checkpoint (naive: 2 credits; corrobo: 1), CI-gated.
 - Docs: [failure matrix](docs/failure-matrix.md) (every row test-backed, CI-checked), [guarantees](docs/guarantees.md), [why not just…](docs/why-not-just.md).
 
 ## 0.2.1

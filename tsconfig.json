@@ -10,5 +10,6 @@
       "corrobo/testing": ["./src/testing/index.ts"]
     }
   },
-  "include": ["src", "tests", "examples", "scripts"]
+  "include": ["src", "tests", "examples", "scripts"],
+  "exclude": ["examples/dbos-workflow"]
 }
