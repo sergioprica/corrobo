@@ -111,7 +111,10 @@ class SimulatedCrash extends Error {
  * that "crashes" at a chosen write.
  */
 class HarnessStore extends InMemoryStore {
-  time = Date.parse("2026-01-01T00:00:00.000Z");
+  // Starts at the real current time, so a contract that reads the clock itself (e.g. to judge a
+  // provider's key-retention window from attemptStartedAt) sees a consistent start; the harness
+  // then only moves this clock forward, so the contract's own clock never runs ahead of it.
+  time = Date.now();
   crashOn: "afterReserve" | "onResolve" | null = null;
 
   async now(): Promise<Date> {
@@ -161,9 +164,11 @@ export async function verifyEffectContract<Intent>(options: VerifyOptions<Intent
   const failed = ran.filter((r) => r.status === "fail");
   const skipped = results.length - ran.length;
   const summary =
-    failed.length === 0
-      ? `corrobo conformance: passed the configured scenarios (${ran.length} run${skipped ? `, ${skipped} skipped` : ""}).`
-      : `corrobo conformance: FAILED ${failed.length} of ${ran.length} scenarios run (${failed.map((f) => f.scenario).join(", ")}).`;
+    ran.length === 0
+      ? `corrobo conformance: no scenarios ran (${skipped} skipped), so nothing was verified.`
+      : failed.length === 0
+        ? `corrobo conformance: passed the configured scenarios (${ran.length} run${skipped ? `, ${skipped} skipped` : ""}).`
+        : `corrobo conformance: FAILED ${failed.length} of ${ran.length} scenarios run (${failed.map((f) => f.scenario).join(", ")}).`;
   return { passed: failed.length === 0 && ran.length > 0, results, summary };
 }
 
@@ -375,8 +380,13 @@ async function runScenario<Intent>(scenario: ScenarioName, options: VerifyOption
   } catch (err) {
     failures.push(`unexpected error: ${err instanceof Error ? err.message : String(err)}`);
   }
-  // Universal: APPLIED is a claim that the effect exists; the target must agree.
-  if (run.last?.evidenceState === "APPLIED" && (await effects()) === 0) {
+  // Universal rules, whatever the scenario: never more than one effect, and APPLIED is a claim
+  // that the effect exists, so the target must agree.
+  const finalEffects = await effects();
+  if (finalEffects > 1 && !failures.some((f) => f.includes(`found ${finalEffects}`))) {
+    failures.push(`the target has ${finalEffects} effects for one operation`);
+  }
+  if (run.last?.evidenceState === "APPLIED" && finalEffects === 0) {
     failures.push("final evidence is APPLIED but the target has no effect for this operation");
   }
 
@@ -395,16 +405,23 @@ async function runScenario<Intent>(scenario: ScenarioName, options: VerifyOption
 function makeRun<Intent>(scenario: ScenarioName, options: VerifyOptions<Intent>): Run {
   const calls = { execute: 0, observe: 0 };
   const original = options.contract as EffectContract<unknown, unknown, unknown>;
-  // Inherit everything from the contract (including class methods); only count calls.
-  const contract = Object.create(original) as EffectContract<unknown, unknown, unknown>;
-  contract.execute = (input) => {
-    calls.execute += 1;
-    return original.execute(input);
-  };
-  contract.observe = (input) => {
-    calls.observe += 1;
-    return original.observe(input);
-  };
+  // Forward everything to the contract untouched (methods keep the contract as `this`, so class
+  // contracts with private fields work, and frozen contracts are never written to); only count
+  // execute() and observe() calls. The proxy's own target is a blank object so no proxy
+  // invariant ties it to the contract's (possibly frozen) properties.
+  const contract = new Proxy({} as EffectContract<unknown, unknown, unknown>, {
+    get(_blank, prop) {
+      const value = Reflect.get(original, prop, original);
+      if (prop === "execute" || prop === "observe") {
+        return (input: never) => {
+          calls[prop] += 1;
+          return (value as (input: never) => unknown).call(original, input);
+        };
+      }
+      return typeof value === "function" ? value.bind(original) : value;
+    },
+    has: (_blank, prop) => Reflect.has(original, prop)
+  });
   const run: Run = {
     store: new HarnessStore(),
     calls,

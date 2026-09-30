@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { formatConformanceReport, verifyEffectContract } from "../src/testing";
 import { correctContract, fakeLedger } from "../examples/conformance/fake-ledger";
+import { observed } from "../src/core/helpers";
 import type { ConformanceTarget } from "../src/testing";
 import { createIssueCreditContract } from "../examples/timeout-after-write/contract";
 import { startLedgerServer } from "../examples/timeout-after-write/ledger-server";
@@ -96,5 +97,82 @@ describe("the demo's real HTTP ledger contract passes the harness", () => {
       "pending-then-rejected",
       "pending-then-settled"
     ]);
+  });
+});
+
+describe("harness artifacts must not fail a correct contract (review fixes)", () => {
+  it("a class-based contract with private fields, and a frozen contract, both pass", async () => {
+    const { client, target } = fakeLedger();
+    class CreditContract {
+      readonly operationType = "fake/credit-class";
+      readonly retryPolicy = { maxAttempts: 3, retryOnNotApplied: true };
+      readonly maxInFlightMs = 1_000;
+      #client = client;
+      execute({ identity }: { identity: { id: string } }) {
+        return this.#client.write(identity.id);
+      }
+      async observe({ identity }: { identity: { id: string } }) {
+        return observed(await this.#client.read(identity.id), { source: "fake", authoritative: true });
+      }
+      reconcile({ observation }: { observation: { status: string; data?: { applied: number; pending: boolean } } }) {
+        return correctContract(client).reconcile({ observation } as never);
+      }
+    }
+    const asClass = new CreditContract() as never;
+    const report1 = await verifyEffectContract({ contract: asClass, target, intent: { amount: 5 } });
+    expect(report1.passed, formatConformanceReport(report1)).toBe(true);
+
+    const frozen = Object.freeze({ ...correctContract(client) });
+    const report2 = await verifyEffectContract({ contract: frozen, target, intent: { amount: 5 } });
+    expect(report2.passed, formatConformanceReport(report2)).toBe(true);
+  });
+
+  it("a contract that judges a replay window with its own clock (like the Stripe example) is not failed by the virtual clock", async () => {
+    const { client, target } = fakeLedger();
+    const base = correctContract(client);
+    const windowed = {
+      ...base,
+      observe: async (input: Parameters<typeof base.observe>[0]) => {
+        // Refuse to trust anything older than 22h, measured with the real clock.
+        if (Date.now() - Date.parse(input.attemptStartedAt) > 22 * 3_600_000) throw new Error("outside replay window");
+        return base.observe(input);
+      }
+    };
+    const report = await verifyEffectContract({ contract: windowed, target, intent: { amount: 5 } });
+    expect(report.passed, formatConformanceReport(report)).toBe(true);
+  });
+
+  it("more than one effect fails every scenario, even ones that don't check effects themselves", async () => {
+    const { client, target } = fakeLedger();
+    const base = correctContract(client);
+    const doubleWrite = {
+      ...base,
+      execute: async (input: Parameters<typeof base.execute>[0]) => {
+        await base.execute(input);
+        return base.execute(input); // a bug: writes twice
+      }
+    };
+    const report = await verifyEffectContract({
+      contract: doubleWrite,
+      target,
+      intent: { amount: 5 },
+      otherIntent: { amount: 6 },
+      scenarios: ["identity-reuse-different-intent"]
+    });
+    expect(report.passed).toBe(false);
+    expect(report.results[0].notes.join(" ")).toMatch(/the target has 2 effects for one operation/);
+  });
+
+  it("when every scenario is skipped, the report says nothing was verified and doesn't pass", async () => {
+    const { client, target } = fakeLedger();
+    const report = await verifyEffectContract({
+      contract: correctContract(client),
+      target: { ...target, lateLandingMs: undefined },
+      intent: { amount: 5 },
+      scenarios: ["late-landing", "identity-reuse-different-intent"]
+    });
+    expect(report.passed).toBe(false);
+    expect(report.summary).toBe("corrobo conformance: no scenarios ran (2 skipped), so nothing was verified.");
+    expect(formatConformanceReport(report)).not.toMatch(/passed/);
   });
 });

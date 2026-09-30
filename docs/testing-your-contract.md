@@ -36,7 +36,9 @@ Each scenario starts from a reset target and counts effects **on your fake** —
 | `pending-then-settled` / `-rejected` | The target accepts the write as pending | No second `execute()` while pending; settles to 1 effect, or a rejection retries at most once |
 | `neighbor-effect-isolation` | Another operation's effect already exists | `observe()` doesn't mistake it for this operation's |
 
-Time windows pass on a virtual clock — nothing sleeps — and crashes are simulated at store writes, with records surviving the way they would in `PostgresStore`.
+Time windows pass on the store's virtual clock, which starts at the current time and only moves forward, so nothing sleeps. corrobo's own timing (attempt start, `maxInFlightMs`, `retryNotBefore`) follows that clock. If your contract reads the time itself (for example `Date.now()` against `attemptStartedAt`), it sees real time, which is never ahead of the store's. Crashes are simulated at store writes, with records surviving the way they would in `PostgresStore`.
+
+Not covered: the `authorize()` / review flow (use an intent that doesn't require review, or the harness will see nothing executed), custom `EffectStore` implementations (the harness uses its own store), and anything your fake doesn't model.
 
 ## Writing the fake
 
