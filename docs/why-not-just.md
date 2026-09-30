@@ -66,7 +66,7 @@ Checked against current official docs on 2026-09-29.
 
 **When it is enough:** A received 2xx/4xx/5xx response is useful evidence. HTTP status codes describe the result and response semantics: https://www.rfc-editor.org/rfc/rfc9110.html#name-status-codes.
 
-**Where ambiguity remains:** A timeout has no status code. A 500 may be saved by an idempotency layer. A 409/405 after a lost success may mean "already applied," not "failed."
+**Where ambiguity remains:** A timeout has no status code. A 500 may be saved by an idempotency layer. A 409/405 on a retry says the request can't proceed now, which can be because the first attempt already succeeded; it doesn't say nothing happened. For a GitHub PR merge, for example, the reliable answer is the PR's `merged` state, not the retry's status code.
 
 **How corrobo composes with it:** `execute()` captures transport evidence without treating it as business truth. `observe()` and `reconcile()` decide the evidence state.
 

@@ -3,8 +3,8 @@ import { dirname, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Every relative link in README.md, CONTRIBUTING.md, CHANGELOG.md, SECURITY.md, CODE_OF_CONDUCT.md
- * and docs/*.md must point at a file that exists, and every
+ * Every relative link in README.md, CONTRIBUTING.md, CHANGELOG.md, SECURITY.md, CODE_OF_CONDUCT.md,
+ * ROADMAP.md and docs/*.md must point at a file that exists, and every
  * `#anchor` at a heading that exists (GitHub's slug rules), so the docs can't quietly rot.
  */
 const root = join(__dirname, "..");
@@ -14,6 +14,7 @@ const docs = [
   "CHANGELOG.md",
   "SECURITY.md",
   "CODE_OF_CONDUCT.md",
+  "ROADMAP.md",
   ...readdirSync(join(root, "docs")).filter((f) => f.endsWith(".md")).map((f) => `docs/${f}`)
 ];
 
