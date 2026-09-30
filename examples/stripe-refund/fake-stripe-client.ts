@@ -39,6 +39,7 @@ export class FakeStripeClient implements StripeClientLike {
   private readonly charges = new Map<string, ChargeState>();
   private readonly faults = new Map<string, ChargeFaults>();
   private readonly byIdempotencyKey = new Map<string, RefundLike>();
+  private readonly createdByKey = new Map<string, number>();
   private readonly byId = new Map<string, RefundLike>();
   private createdRefunds = 0;
 
@@ -69,6 +70,11 @@ export class FakeStripeClient implements StripeClientLike {
     return this.createdRefunds;
   }
 
+  /** Real refund creations for a single Idempotency-Key (per-operation effect count for the conformance harness). */
+  createdRefundCountForKey(idempotencyKey: string): number {
+    return this.createdByKey.get(idempotencyKey) ?? 0;
+  }
+
   getRefundState(id: string): RefundLike | undefined {
     return this.byId.get(id);
   }
@@ -84,12 +90,16 @@ export class FakeStripeClient implements StripeClientLike {
     idempotencyKey: string
   ): Promise<RefundLike> {
     this.idempotencyKeysReceived.push(idempotencyKey);
+    const fault = this.faults.get(params.charge);
     const cached = this.byIdempotencyKey.get(idempotencyKey);
     if (cached) {
+      if (fault && fault.retrieveFailures > 0) {
+        fault.retrieveFailures -= 1;
+        throw new Error("simulated network failure during read-back");
+      }
       return cached;
     }
 
-    const fault = this.faults.get(params.charge);
     if (fault && fault.createFailures > 0 && fault.mode === "beforeCommit") {
       fault.createFailures -= 1;
       throw new Error("simulated network failure before the request reached Stripe");
@@ -124,6 +134,7 @@ export class FakeStripeClient implements StripeClientLike {
     }
 
     this.byIdempotencyKey.set(idempotencyKey, refund);
+    this.createdByKey.set(idempotencyKey, (this.createdByKey.get(idempotencyKey) ?? 0) + 1);
     this.byId.set(id, refund);
 
     if (charge.convergeAsync) {
