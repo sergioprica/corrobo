@@ -72,6 +72,7 @@
     "quickstart": "tsx examples/quickstart/quickstart.ts",
     "demo": "tsx examples/timeout-after-write/demo.ts",
     "demo:svg": "tsx scripts/render-demo-svg.ts",
+    "conformance": "tsx examples/conformance/run.ts",
     "example:rest": "tsx examples/rest/demo.ts",
     "example:stripe": "tsx examples/stripe-refund/demo.ts",
     "example:stripe:live-smoke": "tsx examples/stripe-refund/live-smoke.ts",

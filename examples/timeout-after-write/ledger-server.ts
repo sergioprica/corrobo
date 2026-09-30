@@ -43,6 +43,8 @@ export interface LedgerServer {
   holdNextCommit(): () => void;
   /** Answer the next read with 503 instead of the data. */
   failNextRead(): void;
+  /** Forget every credit, event and pending fault. */
+  reset(): void;
   /** Direct view of the ledger's own state (the demo's proof also reads it over HTTP). */
   credits(): readonly Credit[];
   events(): readonly LedgerEvent[];
@@ -148,6 +150,14 @@ export async function startLedgerServer(): Promise<LedgerServer> {
     },
     failNextRead: () => {
       failRead = true;
+    },
+    reset: () => {
+      credits.length = 0;
+      events.length = 0;
+      loseNext = false;
+      loseRequest = false;
+      held = null;
+      failRead = false;
     },
     credits: () => credits,
     events: () => events,
