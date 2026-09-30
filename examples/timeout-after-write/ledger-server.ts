@@ -51,7 +51,16 @@ export interface LedgerServer {
   close(): Promise<void>;
 }
 
-export async function startLedgerServer(): Promise<LedgerServer> {
+export interface LedgerServerOptions {
+  /**
+   * Called right after a credit is committed, before any response is sent; the ledger waits for
+   * it. Lets a test do something at exactly that moment — e.g. kill the process that made the
+   * request and wait until it has exited, so it can never see the answer.
+   */
+  onCommit?(credit: Credit): void | Promise<void>;
+}
+
+export async function startLedgerServer(options: LedgerServerOptions = {}): Promise<LedgerServer> {
   const credits: Credit[] = [];
   const events: LedgerEvent[] = [];
   let loseNext = false;
@@ -62,7 +71,7 @@ export async function startLedgerServer(): Promise<LedgerServer> {
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://ledger");
     if (req.method === "POST" && url.pathname === "/credits") {
-      readJson(req).then((body) => {
+      readJson(req).then(async (body) => {
         const reference = String(body.reference);
         const commit = (): Credit => {
           const credit: Credit = {
@@ -90,7 +99,8 @@ export async function startLedgerServer(): Promise<LedgerServer> {
           return;
         }
         const credit = commit();
-        if (loseNext) {
+        await options.onCommit?.(credit);
+        if (loseNext || req.socket.destroyed) {
           loseNext = false;
           events.push({ kind: "response_lost", creditId: credit.id, reference: credit.reference });
           req.socket.destroy(); // the write happened; the answer never arrives

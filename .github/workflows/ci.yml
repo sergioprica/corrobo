@@ -49,6 +49,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: DBOS workflow example (real SIGKILL mid-step; exits non-zero unless naive=2 and corrobo=1 credits)
+        working-directory: examples/dbos-workflow
+        env:
+          DATABASE_URL: ${{ env.CORROBO_TEST_DATABASE_URL }}
+        run: npm ci && npm run typecheck && npm run demo
+
       - name: Timeout-after-write demo (exits non-zero if its proof fails)
         run: npm run demo
 
