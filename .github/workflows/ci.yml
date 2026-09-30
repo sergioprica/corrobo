@@ -52,6 +52,9 @@ jobs:
       - name: Timeout-after-write demo (exits non-zero if its proof fails)
         run: npm run demo
 
+      - name: Conformance harness example (exits non-zero unless it passes the good contract and fails the bad one)
+        run: npm run conformance
+
       - name: Generic REST example smoke test
         run: npm run example:rest
 

@@ -42,7 +42,7 @@ Exactly-once execution in general. Anything about writes made outside corrobo. A
 Write an effect contract: `execute` (make the call, sending the operation id if the API lets you), `observe` (ask the system what's true), `reconcile` (turn that into an evidence state). Then call `runEffect(store, contract, { identity, intent })`. See the [quickstart](../README.md#quickstart).
 
 **How do I test my contract?**
-Today: inject faults around your real calls with `corrobo/testing` (`withFaultInjection`, `withObservationFault`), and count effects on a fake of the external system rather than trusting corrobo's record — the [demo's tests](../tests/timeout-demo.test.ts) show the pattern, including a response lost after commit, a request lost before it, and a late landing. A reusable conformance harness is under consideration.
+Run it through `verifyEffectContract()` from `corrobo/testing`, with a fake of your provider that implements a few fault hooks. It drives lost responses, lost requests, late landings, failed reads, crashes, concurrent callers, identity reuse and pending outcomes, and counts effects on your fake rather than trusting corrobo's record. A pass means the configured scenarios passed against your fake — not that the real provider is covered. See [testing your contract](testing-your-contract.md).
 
 **What data gets persisted?**
 With `PostgresStore`: the operation identity, the intent (as JSON), each attempt's transport outcome, observations, evidence state, next step, reason metadata, and error messages, with no automatic expiry. Never raw thrown error objects. With `InMemoryStore`: nothing beyond the process. → rows 10.1–10.9; [README privacy](../README.md#privacy-and-data-handling)

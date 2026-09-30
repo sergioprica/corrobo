@@ -30,6 +30,7 @@
 - `capabilities` is optional (the runtime never read it).
 - `StoreConflictError`; `OperationRecord.version`; `CoordinatedStore.now()`; `PostgresStore.now()` (the database clock).
 - Structural `PgPool` / `PgPoolClient` / `PgQueryable` types: `corrobo/postgres` no longer needs `@types/pg` to type-check.
+- Conformance harness: `verifyEffectContract()` and `formatConformanceReport()` in `corrobo/testing` run your contract against a fake of your provider through 12 failure scenarios and count effects on the fake ([guide](docs/testing-your-contract.md)); `npm run conformance`.
 - `npm run demo` (timeout-after-write against a real HTTP ledger, CI-gated), `npm run quickstart`.
 - Docs: [failure matrix](docs/failure-matrix.md) (every row test-backed, CI-checked), [guarantees](docs/guarantees.md), [why not just…](docs/why-not-just.md).
 

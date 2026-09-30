@@ -85,6 +85,10 @@ Plus `REVIEW`: an optional `authorize()` hook can require human sign-off *before
 
 **Requests can land late.** A timed-out request isn't undone, it's just unanswered, and it can still be applied after corrobo first looks. So when a failed call is followed by `NOT_APPLIED` while that request could still land, the `RETRY` comes with a `retryNotBefore` time (your declared `maxInFlightMs` after the attempt started): calling earlier does nothing, and calling after it makes corrobo check once more before it executes again. If you don't declare `maxInFlightMs`, the answer is `INVESTIGATE`. Details: [spec §O](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
 
+## Test your contract
+
+The runtime handles timing; whether the answers are right depends on your `observe()` and `reconcile()`. `verifyEffectContract()` (from `corrobo/testing`) runs your contract against a fake of your provider through a lost response, a lost request, a late landing, a failed read, a crash on either side of the write, concurrent callers, a reused identity and pending outcomes, and counts effects on the fake. It fails a blind retry, a failed read treated as "not applied", a `maxInFlightMs` shorter than your provider's real delay, and more. See [docs/testing-your-contract.md](docs/testing-your-contract.md) and `npm run conformance`.
+
 ## Idempotency keys and durable workflows
 
 corrobo doesn't replace either one.
@@ -142,6 +146,7 @@ Two things it would be wrong to claim: that corrobo never handles personal data 
 
 - **[`examples/timeout-after-write`](examples/timeout-after-write)** — `npm run demo`, shown above. Its tests also cover a request lost *before* commit and one that lands *late*.
 - **[`examples/quickstart`](examples/quickstart)** — `npm run quickstart`, the code above.
+- **[`examples/conformance`](examples/conformance)** — `npm run conformance`: the conformance harness against a reference fake, passing and then failing on a too-short `maxInFlightMs`.
 - **[`examples/stripe-refund`](examples/stripe-refund)** — Stripe refunds with idempotency keys and corrobo together, including the key's retention window. `npm run example:stripe` runs against a fake Stripe (no network); an optional test-mode smoke script needs `sk_test_` credentials.
 - **[`examples/rest`](examples/rest)** — a plain HTTP order cancellation: conflict, `PENDING`, `UNKNOWN`. `npm run example:rest`.
 - **[`examples/jev-refund`](examples/jev-refund)** — a model-based risk judgment feeding `authorize()` before execution, while corrobo alone decides what happened after. [Write-up](docs/jev-integration.md). `npm run example:jev` (no API key needed).
