@@ -13,7 +13,7 @@ corrobo is a small TypeScript library for that moment. It records the operation 
 execute  →  observe  →  reconcile  →  recover
 ```
 
-![npm run demo: after a lost response, the naive retry credits the account twice; corrobo checks the ledger and credits once](docs/assets/timeout-after-write.svg)
+![npm run demo: after a lost response, the naive retry credits the account twice; corrobo checks the ledger and credits once](https://raw.githubusercontent.com/vidithsalla/corrobo/main/docs/assets/timeout-after-write.svg)
 
 That's `npm run demo` in this repo: a real local HTTP ledger commits a credit, then drops the connection. Both counts come from the ledger's own API, not from corrobo.
 
