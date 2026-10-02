@@ -547,6 +547,8 @@ describe("reviewEffect(): deciding is separate from acting", () => {
     reviewed = true;
     const decided = await reviewEffect(store, contract, { identity: "s5", decision: { decision: "approved", reviewer: "alice" } });
     expect(decided.review?.attemptCount).toBe(1);
+    expect(decided).toMatchObject({ status: "OPEN", disposition: null, dispositionReason: { code: "REVIEW_APPROVED" } });
+    expect(decided.retryNotBefore).toBeNull();
 
     observes = 0;
     const result = await runEffect(store, contract, { identity: "s5", intent });
@@ -554,5 +556,55 @@ describe("reviewEffect(): deciding is separate from acting", () => {
     expect(observes).toBe(1);
     expect(result.attempts).toHaveLength(1);
     expect(ledger.count("s5")).toBe(1);
+  });
+
+  it("a concurrent write while the decision is being recorded is OperationBusyError, and the decision isn't recorded", async () => {
+    class RacingStore extends ClockStore {
+      raced = false;
+      override async updateOperation(...args: Parameters<ClockStore["updateOperation"]>) {
+        if (!this.raced && args[1].review) {
+          this.raced = true; // another pass writes first (its lock was lost, say)
+          const current = await this.getOperation(args[0]);
+          await super.updateOperation(args[0], { reviewReason: { code: "OTHER", summary: "other" } }, current!.version);
+        }
+        return super.updateOperation(...args);
+      }
+    }
+    const store = new RacingStore();
+    const contract = makeContract(makeLedger());
+    await awaitingReview(store, contract, "s6");
+    await expect(
+      reviewEffect(store, contract, { identity: "s6", decision: { decision: "approved", reviewer: "alice" } })
+    ).rejects.toBeInstanceOf(OperationBusyError);
+    const record = await store.getOperation("s6");
+    expect(record?.review).toBeUndefined();
+    expect(record?.status).toBe("AWAITING_REVIEW");
+  });
+
+  it("a review record without attemptCount is treated as recent: the next runEffect() re-observes first", async () => {
+    const store = new ClockStore();
+    const ledger = makeLedger();
+    let observes = 0;
+    const base = makeContract(ledger);
+    const contract = { ...base, authorize: undefined, observe: async (input: Parameters<typeof base.observe>[0]) => (observes++, base.observe(input)) };
+    ledger.respondNotAppliedOnce();
+    await runEffect(store, contract, { identity: "s7", intent }); // attempt 1: not applied, RETRY
+    const record = await store.getOperation("s7");
+    const { attemptCount: _dropped, ...withoutCount } = {
+      decision: "approved" as const,
+      reviewer: "alice",
+      decidedAt: store.iso(),
+      intentFingerprint: fingerprintIntent(contract, intent),
+      recordedAt: store.iso(),
+      attemptCount: 1
+    };
+    await store.updateOperation("s7", { review: withoutCount as RecordedReview }, record!.version);
+
+    ledger.credits.push("s7"); // the effect appeared
+    observes = 0;
+    const result = await runEffect(store, contract, { identity: "s7", intent });
+    expect(result).toMatchObject({ evidenceState: "APPLIED", disposition: "COMPLETE" });
+    expect(observes).toBe(1);
+    expect(ledger.count("s7")).toBe(1);
   });
 });

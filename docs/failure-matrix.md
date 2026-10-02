@@ -96,10 +96,10 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 7.21 | Approver policy (e.g. no self-approval) | Up to `revalidate()`, which receives the approval and this call's `context` | Only when it says `proceed` | T143 |
 | 7.22 | `"approved"` / `"rejected"` strings (deprecated) | Still work; recorded with `reviewer: null` | As before | T145, T48 |
 | 7.23 | An operation approved by 0.3.x, which recorded no decision, after upgrading | `AWAITING_REVIEW` with `APPROVAL_NOT_RECORDED` before any further attempt | Not until re-approved | T149, T150 |
-| 7.24 | `reviewEffect()` records a decision | Records it and nothing else: no `execute()`, no `observe()`; the result says approved, not attempted yet; the next `runEffect()` attempts | Not by `reviewEffect()` | T151 |
+| 7.24 | `reviewEffect()` records a decision | Records it and nothing else: no `execute()`, no `observe()`; the result says approved, not attempted since (also after earlier attempts); the next `runEffect()` attempts | Not by `reviewEffect()` | T151, T155 |
 | 7.25 | `runEffect()` is handed a decision object (e.g. by an agent's tool) | `TypeError`, nothing recorded: decisions only go through `reviewEffect()` | No | T152 |
-| 7.26 | `reviewEffect()` while another call holds the operation, or on one that isn't awaiting review | Busy: `OperationBusyError`, nothing recorded. Not awaiting review: current state returned, nothing recorded | No | T153, T154, T156 |
-| 7.27 | Approved (separately) after an attempt that got a not-applied response | The next `runEffect()` re-observes that attempt first; an effect that appeared during the wait is `COMPLETE` | No | T155 |
+| 7.26 | `reviewEffect()` while another call holds the operation (or writes to it mid-review), or on one that isn't awaiting review | Busy: `OperationBusyError`, nothing recorded. Not awaiting review: current state returned, nothing recorded | No | T153, T154, T156, T157 |
+| 7.27 | Approved (separately) after an attempt that got a not-applied response | The next `runEffect()` re-observes that attempt first (also if the review record lacks its attempt count); an effect that appeared during the wait is `COMPLETE` | No | T155, T158 |
 
 ## 8. Concurrency and lock loss
 
@@ -332,3 +332,5 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 - **T154** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an operation that isn't awaiting review is returned unchanged, and the decision isn't recorded"
 - **T155** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "approved after an attempt that got a not-applied response: the next runEffect() re-observes first, so an effect that appeared meanwhile isn't repeated"
 - **T156** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "reviewEffect() throws OperationBusyError while another process holds the operation's advisory lock"
+- **T157** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a concurrent write while the decision is being recorded is OperationBusyError, and the decision isn't recorded"
+- **T158** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a review record without attemptCount is treated as recent: the next runEffect() re-observes first"

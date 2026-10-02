@@ -311,6 +311,15 @@ function resultBeforeAttempt<Observation>(
   };
 }
 
+function approvedNotAttempted(review: RecordedReview): ReasonCode {
+  return {
+    code: "REVIEW_APPROVED",
+    summary:
+      `Approved in review${review.reviewer ? ` by ${review.reviewer}` : ""}; not attempted yet since. ` +
+      "The next runEffect() call checks the approval and makes the attempt."
+  };
+}
+
 function rejectedInReview(review: RecordedReview | undefined): ReasonCode {
   return {
     code: "POLICY_REVIEW_REJECTED",
@@ -353,12 +362,7 @@ function resultFromRecord<Observation>(record: OperationRecord): EffectResult<Ob
 
   if (!latest) {
     if (record.review?.decision === "approved") {
-      return resultBeforeAttempt(record, null, {
-        code: "REVIEW_APPROVED",
-        summary:
-          `Approved in review${record.review.reviewer ? ` by ${record.review.reviewer}` : ""}; not attempted yet. ` +
-          "The next runEffect() call checks the approval and makes the attempt."
-      });
+      return resultBeforeAttempt(record, null, approvedNotAttempted(record.review));
     }
     // Otherwise an operation with no attempt is AWAITING_REVIEW, CLOSED (above), or OPEN only
     // for the instant before its first reservation. Report it as not yet attempted.
@@ -843,7 +847,11 @@ export async function runEffect<Intent, Observation, Evidence, Context = unknown
  *   Rejected: CLOSED, terminally.
  * - If the operation isn't awaiting review (already decided, never needed review, closed), the
  *   decision is not recorded and the current state is returned; compare `result.review`.
- * - If another call holds the operation right now, throws OperationBusyError (nothing recorded).
+ * - If another call holds the operation's lock right now, throws OperationBusyError (nothing
+ *   recorded). Like runEffect(), it first needs a connection from the store (for PostgresStore,
+ *   from your pool), and waits for one if the pool is exhausted; it then re-reads and re-checks
+ *   everything under the lock, so a decision recorded after such a wait is still checked
+ *   against the operation as it is then.
  */
 export async function reviewEffect<Intent, Observation, Evidence, Context = unknown>(
   store: EffectStore,
@@ -876,7 +884,9 @@ export async function reviewEffect<Intent, Observation, Evidence, Context = unkn
       { status: review.decision === "approved" ? "OPEN" : "CLOSED", review },
       existing.version
     );
-    return resultFromRecord(updated);
+    // Approved: say so, even after earlier attempts (whose last disposition no longer describes
+    // what happens next): nothing has been attempted since, the next runEffect() will.
+    return review.decision === "approved" ? resultBeforeAttempt(updated, null, approvedNotAttempted(review)) : resultFromRecord(updated);
   } catch (err) {
     if (err instanceof StoreConflictError) {
       throw new OperationBusyError(identity.id);
@@ -987,8 +997,10 @@ async function continueOpen<Intent, Observation, Evidence, Context>(
   // Approved after the latest attempt (revalidate() asked for review before the next one):
   // time has passed while it waited, so that attempt is re-observed before anything executes
   // again, even if its NOT_APPLIED was final when it was recorded.
+  // A review without attemptCount (written by a store that dropped it) is treated as recent.
   const approvedSinceLatest =
-    existing.review?.decision === "approved" && existing.review.attemptCount === existing.attempts.length;
+    existing.review?.decision === "approved" &&
+    (typeof existing.review.attemptCount !== "number" || existing.review.attemptCount === existing.attempts.length);
   if (!latest) {
     return await checkThenAttempt(store, contract, existing, request);
   }

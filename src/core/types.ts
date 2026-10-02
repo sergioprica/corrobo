@@ -364,7 +364,8 @@ export interface EffectRequest<Intent, Context = unknown> {
   /**
    * @deprecated Use reviewEffect() to record a decision (with who made it), then runEffect()
    * to act on it. This form records no reviewer, and couples the decision to the call that
-   * executes. It still works in 0.4 and will be removed in 0.5.
+   * executes: while it exists, never let a model or a worker set it (leave it out of any tool
+   * schema). It still works in 0.4 and will be removed in 0.5.
    */
   reviewDecision?: "approved" | "rejected";
   /**
