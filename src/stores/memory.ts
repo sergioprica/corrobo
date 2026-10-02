@@ -154,6 +154,10 @@ export class InMemoryStore implements EffectStore {
         if (update.blockedBy === null) delete record.blockedBy;
         else record.blockedBy = update.blockedBy;
       }
+      if (update.review !== undefined) {
+        if (update.review === null) delete record.review;
+        else record.review = update.review;
+      }
     });
   }
 

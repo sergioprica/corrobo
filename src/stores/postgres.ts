@@ -7,6 +7,7 @@ import type {
   ObservationResult,
   OperationRecord,
   OperationStatus,
+  RecordedReview,
   ReservedAttemptInput,
   TransportOutcome
 } from "../core/types";
@@ -16,7 +17,7 @@ const TABLE = "corrobo_operations";
 /**
  * DDL for the single table this store needs. Safe to run repeatedly. The trailing ALTERs
  * upgrade a table created by an earlier corrobo in place: `version` (added in 0.3.0; existing
- * rows start at 0) and `blocked_by` (0.4.0; nullable).
+ * rows start at 0), and `blocked_by` and `review` (0.4.0; nullable).
  */
 export const POSTGRES_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS ${TABLE} (
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS ${TABLE} (
 );
 ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS blocked_by JSONB;
+ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS review JSONB;
 `;
 
 interface Row {
@@ -42,6 +44,7 @@ interface Row {
   review_reason: unknown;
   attempts: AttemptRecord[];
   blocked_by: BlockingCheck | null;
+  review: RecordedReview | null;
   created_at: Date;
   updated_at: Date;
   /** BIGINT: node-postgres returns it as a string. */
@@ -82,6 +85,7 @@ function rowToRecord(row: Row): OperationRecord {
     reviewReason: (row.review_reason as OperationRecord["reviewReason"]) ?? undefined,
     attempts: row.attempts,
     ...(row.blocked_by ? { blockedBy: row.blocked_by } : {}),
+    ...(row.review ? { review: row.review } : {}),
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     version: Number(row.version)
@@ -297,7 +301,7 @@ async function setStatusImpl(
 }
 
 /** JSONB columns of the operation itself; each is written only when present in the update. */
-const UPDATABLE_JSON_COLUMNS = { reviewReason: "review_reason", blockedBy: "blocked_by" } as const;
+const UPDATABLE_JSON_COLUMNS = { reviewReason: "review_reason", blockedBy: "blocked_by", review: "review" } as const;
 
 async function updateOperationImpl(
   q: Queryable,
