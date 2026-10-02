@@ -108,14 +108,11 @@ function prepareIntent<Intent>(contract: EffectContract<Intent, unknown, unknown
   return { stored, fingerprint: canonicalStringify(stored) };
 }
 
-/** A review decision after validation; the deprecated runEffect() strings have reviewer null. */
-type ValidDecision = Omit<ReviewDecision, "reviewer"> & { reviewer: string | null };
+type ValidDecision = ReviewDecision;
 
 /** An EffectRequest after identity shorthand is resolved (see runEffect). */
-type ResolvedRequest<Intent, Context = unknown> = Omit<EffectRequest<Intent, Context>, "identity" | "reviewDecision"> & {
+type ResolvedRequest<Intent, Context = unknown> = Omit<EffectRequest<Intent, Context>, "identity"> & {
   identity: OperationIdentity;
-  /** The deprecated reviewDecision string, as a decision with no reviewer. */
-  review?: ValidDecision;
 };
 
 /**
@@ -158,14 +155,18 @@ function canonicalTime(value: unknown): string | null {
   return /^\d{4}-/.test(canonical) ? canonical : null;
 }
 
-/** runEffect()'s deprecated reviewDecision: only the two strings; a decision object belongs to reviewEffect(). */
-function legacyReviewDecision(input: unknown): ValidDecision | undefined {
-  if (input === undefined) return undefined;
-  if (input === "approved" || input === "rejected") return { decision: input, reviewer: null };
-  throw new TypeError(
-    `corrobo: runEffect()'s reviewDecision only accepts the deprecated "approved" / "rejected". Record a ` +
-      `ReviewDecision with reviewEffect(), then call runEffect() to act on it; nothing was recorded or executed.`
-  );
+/**
+ * runEffect() can't approve anything. corrobo 0.3 took `reviewDecision` here; a caller still
+ * passing it gets a loud error instead of an approval silently ignored (or silently honored).
+ */
+function refuseReviewDecision(input: object): void {
+  if ("reviewDecision" in input && (input as { reviewDecision?: unknown }).reviewDecision !== undefined) {
+    throw new TypeError(
+      `corrobo: runEffect() doesn't take reviewDecision (removed in 0.4). Record the decision with ` +
+        `reviewEffect(store, contract, { identity, decision: { decision, reviewer } }) from your review flow, then ` +
+        `call runEffect() to act on it; nothing was recorded or executed.`
+    );
+  }
 }
 
 /** Validates a ReviewDecision before anything runs: a malformed approval must never count as one. */
@@ -202,11 +203,8 @@ function resolveRequest<Intent, Context>(
   contract: EffectContract<Intent, unknown, unknown, Context>,
   input: EffectRequest<Intent, Context>
 ): ResolvedRequest<Intent, Context> {
-  const { reviewDecision, ...rest } = input;
-  const review = legacyReviewDecision(reviewDecision);
-  const request: Omit<ResolvedRequest<Intent, Context>, "identity"> & { identity: OperationIdentity | string } =
-    review ? { ...rest, review } : rest;
-  return { ...request, identity: resolveIdentity(contract as EffectContract<unknown, unknown, unknown>, request.identity) };
+  refuseReviewDecision(input);
+  return { ...input, identity: resolveIdentity(contract as EffectContract<unknown, unknown, unknown>, input.identity) };
 }
 
 /** A string id is shorthand for { id, operationType: contract.operationType }; an object's type must match. */
@@ -932,18 +930,8 @@ async function runCoordinated<Intent, Observation, Evidence, Context>(
   }
 
   if (existing.status === "AWAITING_REVIEW") {
-    if (!request.review) {
-      return resultFromRecord(existing);
-    }
-    const review = await recordReview(store, contract, existing, request.review);
-    if (review.decision !== "approved") {
-      const closed = await store.updateOperation(existing.identity.id, { status: "CLOSED", review }, existing.version);
-      return resultFromRecord(closed);
-    }
-    // Approved (deprecated path: decided and acted on in one call): continue as an OPEN
-    // operation would; see continueOpen for the re-observation after a review wait.
-    const reopened = await store.updateOperation(existing.identity.id, { status: "OPEN", review }, existing.version);
-    return await continueOpen(store, contract, reopened, request);
+    // Decisions are recorded by reviewEffect(); until one is, nothing happens here.
+    return resultFromRecord(existing);
   }
 
   return await continueOpen(store, contract, existing, request);

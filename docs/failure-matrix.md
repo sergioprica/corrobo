@@ -79,7 +79,7 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 7.4 | Called again after rejection | Stays closed | Never | T50 |
 | 7.5 | `revalidate()` runs before an attempt | Before every attempt, including the first, and before the attempt is reserved, with this call's `context`; a `proceed` is recorded on the attempt | Only on `proceed` | T116, T124 |
 | 7.6 | `revalidate()` says `reject` | `CLOSED`, `REPLAN` (new decision, new identity); the check is recorded on the operation; nothing reserved | Never | T117, T128 |
-| 7.7 | `revalidate()` says `requiresReview` | `AWAITING_REVIEW`, `REVIEW`; after approval it runs again before anything executes, and can send it back to review | Not until approved *and* revalidated | T118, T119 |
+| 7.7 | `revalidate()` says `requiresReview` | `AWAITING_REVIEW`, `REVIEW`; after approval it runs again (with the acting call's `context` and the approval) before anything executes, and can send it back to review | Not until approved *and* revalidated | T118, T119 |
 | 7.8 | `revalidate()` throws, or returns something that isn't a valid result (including one whose fields throw when read) | `REVALIDATION_FAILED`, operation stays `OPEN`, nothing reserved; a later call checks again | Not until a check passes | T120, T121, T133 |
 | 7.9 | Things changed between attempt 1 and attempt 2 (scope revoked, order cancelled) | Attempt 2 is stopped; attempt 1's evidence is still reported | No | T122 |
 | 7.10 | A late landing while `revalidate()` would now say no | The settlement re-check finds `APPLIED` → `COMPLETE`; `revalidate()` is never asked (it gates new effects, not finding out what happened) | No | T123 |
@@ -94,7 +94,7 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 7.19 | Approval expires before a later attempt, or while `revalidate()` is running | `AWAITING_REVIEW` with `APPROVAL_EXPIRED`; checked again after `revalidate()` returns, at the time the attempt would start; a new approval allows the attempt | Not until re-approved | T139, T144, T147 |
 | 7.20 | Approval no longer matches the recorded intent under the contract's current fingerprint rules | `AWAITING_REVIEW` with `APPROVAL_INTENT_MISMATCH` | Not until re-approved | T142 |
 | 7.21 | Approver policy (e.g. no self-approval) | Up to `revalidate()`, which receives the approval and this call's `context` | Only when it says `proceed` | T143 |
-| 7.22 | `"approved"` / `"rejected"` strings (deprecated) | Still work; recorded with `reviewer: null` | As before | T145, T48 |
+| 7.22 | `runEffect()` called with 0.3's `reviewDecision: "approved"` / `"rejected"` | `TypeError` pointing to `reviewEffect()`; nothing recorded. `runEffect()` has no way to approve | No | T145 |
 | 7.23 | An operation approved by 0.3.x, which recorded no decision, after upgrading | `AWAITING_REVIEW` with `APPROVAL_NOT_RECORDED` before any further attempt | Not until re-approved | T149, T150 |
 | 7.24 | `reviewEffect()` records a decision | Records it and nothing else: no `execute()`, no `observe()`; the result says approved, not attempted since (also after earlier attempts); the next `runEffect()` attempts | Not by `reviewEffect()` | T151, T155 |
 | 7.25 | `runEffect()` is handed a decision object (e.g. by an agent's tool) | `TypeError`, nothing recorded: decisions only go through `reviewEffect()` | No | T152 |
@@ -293,7 +293,7 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 - **T115** [`tests/helpers.test.ts`](../tests/helpers.test.ts) — "identity as a string is shorthand for { id, operationType: contract.operationType }"
 - **T116** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "runs once, before the attempt is reserved, with the attempt number, this call's context and the record"
 - **T117** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "reject: nothing is executed or reserved; CLOSED with REPLAN, and later calls never execute"
-- **T118** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "requiresReview: AWAITING_REVIEW with the hook's reason; on approval it runs again, with the approving call's context"
+- **T118** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "requiresReview: AWAITING_REVIEW with the hook's reason; after approval it runs again, with the acting call's context and the approval"
 - **T119** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "an approval that revalidate() still won't accept goes back to review instead of executing"
 - **T120** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "a throw: nothing executed or reserved, the operation stays OPEN with REVALIDATION_FAILED, and a later call checks again"
 - **T121** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "returning %s fails closed"
@@ -320,7 +320,7 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 - **T142** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval whose intent no longer matches the recorded one (the fingerprint rules changed) goes back to review"
 - **T143** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "revalidate() receives the approval and can enforce approver policy (no self-approval)"
 - **T144** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a crash after the approval is recorded but before the attempt: the next call checks the approval again"
-- **T145** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "the deprecated string form still works, and is recorded with reviewer null"
+- **T145** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "runEffect() refuses the reviewDecision field corrobo 0.3 took, and nothing is recorded or executed"
 - **T146** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "migrate() adds the review column to an older table and keeps its rows"
 - **T147** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval that expires while revalidate() runs doesn't allow the attempt, and the attempt starts at the time it was checked"
 - **T148** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "times with an offset are recorded in one canonical UTC form"

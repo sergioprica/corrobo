@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryStore } from "../src/stores/memory";
-import { runEffect } from "../src/core/runtime";
+import { reviewEffect, runEffect } from "../src/core/runtime";
 import { defineContract, observed, reconciled } from "../src/core/helpers";
 import type { RevalidateInput, RevalidationResult } from "../src/core/types";
 
@@ -140,7 +140,9 @@ describe("revalidate(): before the first attempt", () => {
       attempts: []
     });
 
-    const again = await runEffect(store, contract, { identity: "c2", intent, reviewDecision: "approved" });
+    await reviewEffect(store, contract, { identity: "c2", decision: { decision: "approved", reviewer: "reviewer@example.com" } });
+
+    const again = await runEffect(store, contract, { identity: "c2", intent });
     expect(again.disposition).toBe("REPLAN");
     expect(ledger.credits).toEqual([]);
     expect(log).toEqual(["revalidate#1"]); // checked once; a CLOSED operation is never checked again
@@ -158,13 +160,15 @@ describe("revalidate(): before the first attempt", () => {
     expect(result.dispositionReason.summary).toMatch(/new identity/);
   });
 
-  it("requiresReview: AWAITING_REVIEW with the hook's reason; on approval it runs again, with the approving call's context", async () => {
+  it("requiresReview: AWAITING_REVIEW with the hook's reason; after approval it runs again, with the acting call's context and the approval", async () => {
     const store = new ClockStore();
     const ledger = makeLedger();
     const contexts: (Context | undefined)[] = [];
+    const approvers: (string | undefined)[] = [];
     let approvals = 0;
-    const contract = makeContract(ledger, ({ context }) => {
+    const contract = makeContract(ledger, ({ context, approval }) => {
       contexts.push(context);
+      approvers.push(approval?.reviewer);
       return approvals === 0
         ? { decision: "requiresReview", reason: { code: "OVER_LIMIT", summary: "Over the agent's limit." } }
         : { decision: "proceed" };
@@ -184,15 +188,12 @@ describe("revalidate(): before the first attempt", () => {
     expect(contexts).toHaveLength(1);
 
     approvals = 1;
-    const done = await runEffect(store, contract, {
-      identity: "c3",
-      intent,
-      reviewDecision: "approved",
-      context: { actor: "reviewer:alice" }
-    });
+    await reviewEffect(store, contract, { identity: "c3", decision: { decision: "approved", reviewer: "alice" } });
+    const done = await runEffect(store, contract, { identity: "c3", intent, context: { actor: "worker" } });
     expect(done.disposition).toBe("COMPLETE");
     expect(ledger.count("c3")).toBe(1);
-    expect(contexts).toEqual([{ actor: "agent" }, { actor: "reviewer:alice" }]);
+    expect(contexts).toEqual([{ actor: "agent" }, { actor: "worker" }]);
+    expect(approvers).toEqual([undefined, "alice"]);
     expect(done.attempts[0].check?.outcome).toBe("proceed");
   });
 
@@ -203,7 +204,8 @@ describe("revalidate(): before the first attempt", () => {
 
     const waiting = await runEffect(store, contract, { identity: "c3r", intent });
     expect(waiting.dispositionReason.code).toBe("REVALIDATION_REQUIRES_REVIEW");
-    const rejected = await runEffect(store, contract, { identity: "c3r", intent, reviewDecision: "rejected" });
+    await reviewEffect(store, contract, { identity: "c3r", decision: { decision: "rejected", reviewer: "reviewer@example.com" } });
+    const rejected = await runEffect(store, contract, { identity: "c3r", intent });
     expect(rejected).toMatchObject({ status: "CLOSED", disposition: "REVIEW" });
     expect(rejected.dispositionReason.code).toBe("POLICY_REVIEW_REJECTED");
     expect(ledger.credits).toEqual([]);
@@ -212,28 +214,20 @@ describe("revalidate(): before the first attempt", () => {
   it("an approval that revalidate() still won't accept goes back to review instead of executing", async () => {
     const store = new ClockStore();
     const ledger = makeLedger();
-    const contract = makeContract(ledger, ({ context }) =>
-      context?.actor === "reviewer:senior"
+    const contract = makeContract(ledger, ({ approval }) =>
+      approval?.reviewer === "senior"
         ? { decision: "proceed" }
         : { decision: "requiresReview", reason: { code: "NEEDS_SENIOR", summary: "Needs a senior reviewer." } }
     );
 
     await runEffect(store, contract, { identity: "c3s", intent });
-    const junior = await runEffect(store, contract, {
-      identity: "c3s",
-      intent,
-      reviewDecision: "approved",
-      context: { actor: "reviewer:junior" }
-    });
+    await reviewEffect(store, contract, { identity: "c3s", decision: { decision: "approved", reviewer: "junior" } });
+    const junior = await runEffect(store, contract, { identity: "c3s", intent });
     expect(junior).toMatchObject({ status: "AWAITING_REVIEW", dispositionReason: { code: "NEEDS_SENIOR" } });
     expect(ledger.credits).toEqual([]);
 
-    const senior = await runEffect(store, contract, {
-      identity: "c3s",
-      intent,
-      reviewDecision: "approved",
-      context: { actor: "reviewer:senior" }
-    });
+    await reviewEffect(store, contract, { identity: "c3s", decision: { decision: "approved", reviewer: "senior" } });
+    const senior = await runEffect(store, contract, { identity: "c3s", intent });
     expect(senior.disposition).toBe("COMPLETE");
     expect(ledger.count("c3s")).toBe(1);
   });
@@ -250,7 +244,8 @@ describe("revalidate(): before the first attempt", () => {
       }
     };
     await runEffect(store, contract, { identity: "c4", intent, context: { actor: "agent" } });
-    await runEffect(store, contract, { identity: "c4", intent, reviewDecision: "approved" });
+    await reviewEffect(store, contract, { identity: "c4", decision: { decision: "approved", reviewer: "reviewer@example.com" } });
+    await runEffect(store, contract, { identity: "c4", intent });
     expect(authorizeCalls).toEqual([
       [intent, { identity: { id: "c4", operationType: "ledger/credit" }, context: { actor: "agent" } }]
     ]);
@@ -464,7 +459,8 @@ describe("revalidate(): before later attempts", () => {
     ledger.land();
     reviewed = true;
     log.length = 0;
-    const approved = await runEffect(store, contract, { identity: "r5", intent, reviewDecision: "approved" });
+    await reviewEffect(store, contract, { identity: "r5", decision: { decision: "approved", reviewer: "reviewer@example.com" } });
+    const approved = await runEffect(store, contract, { identity: "r5", intent });
     expect(approved).toMatchObject({ evidenceState: "APPLIED", disposition: "COMPLETE" });
     expect(log).toEqual(["observe"]);
     expect(ledger.count("r5")).toBe(1);
@@ -480,7 +476,9 @@ describe("revalidate(): before later attempts", () => {
     await runEffect(store, contract, { identity: "r5r", intent });
     await runEffect(store, contract, { identity: "r5r", intent });
 
-    const rejected = await runEffect(store, contract, { identity: "r5r", intent, reviewDecision: "rejected" });
+    await reviewEffect(store, contract, { identity: "r5r", decision: { decision: "rejected", reviewer: "reviewer@example.com" } });
+
+    const rejected = await runEffect(store, contract, { identity: "r5r", intent });
     expect(rejected).toMatchObject({
       status: "CLOSED",
       disposition: "REVIEW",
@@ -512,7 +510,8 @@ describe("revalidate(): before later attempts", () => {
     ledger.credits.push("r5ok"); // the effect appears while the operation waits for review
     reviewed = true;
     log.length = 0;
-    const approved = await runEffect(store, contract, { identity: "r5ok", intent, reviewDecision: "approved" });
+    await reviewEffect(store, contract, { identity: "r5ok", decision: { decision: "approved", reviewer: "reviewer@example.com" } });
+    const approved = await runEffect(store, contract, { identity: "r5ok", intent });
     expect(approved).toMatchObject({ evidenceState: "APPLIED", disposition: "COMPLETE" });
     expect(log).toEqual(["observe"]);
     expect(ledger.count("r5ok")).toBe(1);
@@ -533,7 +532,8 @@ describe("revalidate(): before later attempts", () => {
     await runEffect(store, contract, { identity: "r5ok2", intent });
     reviewed = true;
     log.length = 0;
-    const approved = await runEffect(store, contract, { identity: "r5ok2", intent, reviewDecision: "approved" });
+    await reviewEffect(store, contract, { identity: "r5ok2", decision: { decision: "approved", reviewer: "reviewer@example.com" } });
+    const approved = await runEffect(store, contract, { identity: "r5ok2", intent });
     expect(log).toEqual(["observe", "revalidate#2", "execute", "observe"]);
     expect(approved.disposition).toBe("COMPLETE");
     expect(ledger.count("r5ok2")).toBe(1);
