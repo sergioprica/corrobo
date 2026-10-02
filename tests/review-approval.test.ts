@@ -206,6 +206,8 @@ describe("review decisions are recorded and bound", () => {
     ["a date that doesn't exist", { decision: "approved", reviewer: "alice", expiresAt: "2099-02-30T00:00:00Z" }],
     ["a time with no offset (host-timezone dependent)", { decision: "approved", reviewer: "alice", expiresAt: "2099-01-01T00:00:00" }],
     ["a date with no time", { decision: "approved", reviewer: "alice", decidedAt: "2026-10-01" }],
+    ["a time an offset carries past year 9999", { decision: "approved", reviewer: "alice", expiresAt: "9999-12-31T23:59:59-23:59" }],
+    ["a leap second (a JavaScript Date can't hold it)", { decision: "approved", reviewer: "alice", expiresAt: "2099-12-31T23:59:60Z" }],
     ["a number", 1],
     ["null", null]
   ])("a malformed reviewDecision (%s) throws before anything is recorded or executed", async (_label, decision) => {

@@ -100,11 +100,13 @@ export interface ReviewDecision {
   decision: "approved" | "rejected";
   /** Who decided, as your app identifies them (a user id, an email). Required, non-empty. */
   reviewer: string;
-  /** When they decided (ISO). Defaults to when corrobo records it. */
+  /** When they decided (RFC 3339 with Z or an offset). Defaults to when corrobo records it. */
   decidedAt?: string;
   /**
-   * Approvals only (ISO): no attempt is started at or after this time. A later attempt (a retry
-   * after the first one failed, say) sends the operation back to review with APPROVAL_EXPIRED.
+   * Approvals only (RFC 3339 with Z or an offset): no attempt whose recorded start time is at
+   * or after this is made; it goes back to review with APPROVAL_EXPIRED. The start time is the
+   * store-clock reading taken just before the attempt is reserved, so execute() itself is called
+   * a reservation write later. Leave margin if that matters.
    */
   expiresAt?: string;
   /**
@@ -247,7 +249,8 @@ export interface EffectContract<Intent, Observation, Evidence, Context = unknown
   /**
    * Upper bound, in milliseconds, on how long after an attempt starts its effect could still
    * land at the external system — at least your execute() client timeout plus any
-   * provider-side processing delay. Consulted only when evidence is NOT_APPLIED but execute()
+   * provider-side processing delay. The attempt's start is read just before its reservation is
+   * written, so include a margin for that write too. Consulted only when evidence is NOT_APPLIED but execute()
    * failed at the transport level (or its outcome was never recorded because the process
    * died): a timed-out request may still be in flight, so an immediate "not applied"
    * observation does not yet prove it never will be.

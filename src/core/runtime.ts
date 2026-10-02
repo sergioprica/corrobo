@@ -118,7 +118,8 @@ const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,9})?(Z|
 
 /**
  * A strict, absolute RFC 3339 timestamp (`Z` or an explicit offset) that names a real calendar
- * time, canonicalized to `toISOString()` form; otherwise null. Deliberately not Date.parse(),
+ * time in years 0000–9999, canonicalized to `toISOString()` form; otherwise null. Leap seconds
+ * (`:60`) are rejected because a JavaScript Date can't represent them. Deliberately not Date.parse(),
  * which accepts other formats, rolls 30 February over to March, and reads a time without an
  * offset in the host's local zone, so two workers could disagree about when an approval expires.
  */
@@ -133,7 +134,11 @@ function canonicalTime(value: unknown): string | null {
     return null;
   }
   const ms = Date.parse(value);
-  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
+  if (Number.isNaN(ms)) return null;
+  const canonical = new Date(ms).toISOString();
+  // An offset can carry a time outside four-digit years (e.g. 9999-12-31T23:59:59-23:59);
+  // that would be stored in a form that isn't RFC 3339 and couldn't be read back by this check.
+  return /^\d{4}-/.test(canonical) ? canonical : null;
 }
 
 /** Validates a reviewDecision before anything runs: a malformed approval must never count as one. */
