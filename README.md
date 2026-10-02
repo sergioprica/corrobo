@@ -67,6 +67,16 @@ async function main() {
 
 `InMemoryStore` is for trying things out: it forgets everything when the process exits, so a restarted worker would see the refund as new. For anything where a restart or a second worker matters, use [`PostgresStore`](#in-production-postgresstore).
 
+## Where the identity comes from
+
+The identity is what makes "call it again" safe, so it has to name one *decision to act*: not one attempt, and not one request.
+
+- **Mint it when the action is confirmed, on the server, and store it with that action:** when the user clicks "Confirm refund", or when an agent's proposed action is approved. Every retry, worker and restart then reads it from there.
+- **Don't create it inside the retry loop or the tool call,** and don't let a model choose it. A new identity per attempt means a new refund per attempt.
+- **Same intent, new identity, new effect.** That's right when someone really asked twice, and wrong when it's a retry. Derive the identity from the intent (say, `refund-order-1001`) only if your rule really is "at most one per order".
+
+If your app already has a row for each action (refund requests, agent tool calls, receipts), use that row's primary key as the identity. [`examples/action-table`](examples/action-table) shows the pattern: corrobo's record says whether the effect happened, your row says what was asked for and by whom, and a sweeper reconciles the two after a crash.
+
 ## What corrobo tells you
 
 Two answers, kept separate on purpose: what the evidence shows, and what's safe to do next.
@@ -79,7 +89,9 @@ Two answers, kept separate on purpose: what the evidence shows, and what's safe 
 | `PENDING` | Accepted, not final yet | none yet: call again later; while it stays `PENDING`, corrobo re-checks instead of re-executing |
 | `UNKNOWN` | It couldn't find out | `INVESTIGATE`, never a blind retry |
 
-Plus `REVIEW`: an optional `authorize()` hook can require human sign-off *before* anything is executed; a reviewer can approve or reject.
+Plus `REVIEW`: an optional `authorize()` hook can require human sign-off *before* anything is executed; a reviewer can approve or reject. Your review screen records the decision with `reviewEffect(store, contract, { identity, decision: { decision: "approved", reviewer, expiresAt } })`, which never executes anything; your worker's next `runEffect()` acts on it. A decision records who made it and when, can carry an expiry, and is bound to the exact intent that was reviewed, and corrobo checks it again before every attempt it allows ([spec §M](docs/v0.1-spec.md#m-review-decisions)). Keeping the two calls apart means the code that makes attempts (an agent's tools, a worker) has no way to approve them: `runEffect()` takes no decision at all. Call `reviewEffect()` only from your own review flow, never from anything a model can call.
+
+**Checking again before each attempt.** An approval given now, or a retry an hour from now, can act on a world that has changed: the order was cancelled, the agent's scope was revoked. An optional `revalidate()` hook runs right before every attempt, including the first, with the current caller's `context`, and can let it `proceed`, send it to `requiresReview`, or `reject` it (`REPLAN`). It never blocks corrobo from finding out what an earlier attempt did, and if it throws, nothing runs. It narrows the gap between checking and acting but can't close it, so use the provider's conditional writes too where it has them. Details: [spec §M.1](docs/v0.1-spec.md#m1-revalidation-before-each-attempt).
 
 **Requests can land late.** A timed-out request isn't undone, it's just unanswered, and it can still be applied after corrobo first looks. So when a failed call is followed by `NOT_APPLIED` while that request could still land, the `RETRY` comes with a `retryNotBefore` time (your declared `maxInFlightMs` after the attempt started): calling earlier does nothing, and calling after it makes corrobo check once more before it executes again. If you don't declare `maxInFlightMs`, the answer is `INVESTIGATE`. Details: [spec §O](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
 
@@ -120,7 +132,7 @@ const store = new PostgresStore(pool, { acknowledgePersistence: true });
 - **Concurrency:** callers racing on the same identity are coordinated with a Postgres advisory lock; different identities run in parallel. Each operation in flight holds one pool connection for its whole pass, so size `max` on your `Pool` for the operations you run at once, plus whatever else uses that pool.
 - **Lost locks:** if the lock's connection dies while `execute()` is still running, version-checked writes keep the stale caller from overwriting anything, and the late-landing rule keeps the next caller from re-executing too early. Time windows use the database's clock, so skew between hosts doesn't matter.
 - `acknowledgePersistence: true` is required on purpose: this store keeps what your contracts produce, with no automatic expiry (see [privacy](#privacy-and-data-handling)).
-- **Upgrading from 0.2.x:** drain 0.2.x workers first, then run `migrate()` once. See [upgrade notes](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
+- **Upgrading:** drain workers on the old version first, then run `migrate()` once. From 0.3.x it adds two nullable columns, and operations approved under 0.3.x need a new review before any further attempt; see the [changelog](CHANGELOG.md). From 0.2.x, see also the [0.3 upgrade notes](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
 
 ## Guarantees
 
@@ -136,7 +148,7 @@ corrobo is not a workflow engine, queue, scheduler, or agent framework. It doesn
 corrobo has no telemetry and no hosted service, and sends no application data to its maintainer. Your effects go to the systems your code already calls; `PostgresStore` writes only to the database you give it (local or remote — your choice).
 
 - **`InMemoryStore`** stays inside the process: no persistence, no network I/O of its own.
-- **`PostgresStore`** persists what your contracts produce: intent, transport evidence, observations, reason metadata and error *messages*, with no automatic expiry. Retention and deletion are yours.
+- **`PostgresStore`** persists what your contracts produce: intent, transport evidence, observations, reason metadata and error *messages*, plus review decisions (reviewer, note), with no automatic expiry. Retention and deletion are yours. `context` is never persisted.
 - **Raw thrown error objects are never persisted** by `PostgresStore` (they often carry request headers and response bodies). Only the message string is kept, so don't put secrets in error messages.
 - corrobo doesn't inspect or filter the data you put in these fields; what goes in is up to you.
 
@@ -146,6 +158,7 @@ Two things it would be wrong to claim: that corrobo never handles personal data 
 
 - **[`examples/timeout-after-write`](examples/timeout-after-write)** — `npm run demo`, shown above. Its tests also cover a request lost *before* commit and one that lands *late*.
 - **[`examples/quickstart`](examples/quickstart)** — `npm run quickstart`, the code above.
+- **[`examples/action-table`](examples/action-table)** — `npm run example:action-table`: linking corrobo's record to your app's own action table (identity minted at confirmation, a sweeper after a crash, a join for operators).
 - **[`examples/conformance`](examples/conformance)** — `npm run conformance`: the conformance harness against a reference fake, passing and then failing on a too-short `maxInFlightMs`.
 - **[`examples/dbos-workflow`](examples/dbos-workflow)** — corrobo inside a [DBOS](https://docs.dbos.dev) workflow step, across a real `SIGKILL` between the write and DBOS's checkpoint. Its own package: build the root first (`npm run build`), then `npm install && npm run demo` in that folder, with `DATABASE_URL`.
 - **[`examples/stripe-refund`](examples/stripe-refund)** — Stripe refunds with idempotency keys and corrobo together, including the key's retention window. `npm run example:stripe` runs against a fake Stripe (no network); an optional test-mode smoke script needs `sk_test_` credentials.

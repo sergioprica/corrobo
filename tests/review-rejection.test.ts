@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryStore } from "../src/stores/memory";
-import { runEffect } from "../src/core/runtime";
+import { reviewEffect, runEffect } from "../src/core/runtime";
 import type { EffectContract } from "../src/core/types";
 
 function makeReviewedContract(executeCalls: { count: number }): EffectContract<Record<string, never>, unknown, unknown> {
@@ -34,7 +34,9 @@ describe("REVIEW rejection", () => {
     expect(awaiting.disposition).toBe("REVIEW");
     expect(awaiting.status).toBe("AWAITING_REVIEW");
 
-    const rejected = await runEffect(store, contract, { identity, intent: {}, reviewDecision: "rejected" });
+    const rejected = await reviewEffect(store, contract, { identity, decision: { decision: "rejected", reviewer: "reviewer@example.com" } });
+
+    await runEffect(store, contract, { identity, intent: {} });
     expect(rejected.disposition).toBe("REVIEW");
     expect(rejected.status).toBe("CLOSED");
     expect(rejected.dispositionReason.code).toBe("POLICY_REVIEW_REJECTED");
@@ -48,10 +50,12 @@ describe("REVIEW rejection", () => {
     const identity = { id: "review-reject-2", operationType: contract.operationType };
 
     await runEffect(store, contract, { identity, intent: {} });
-    await runEffect(store, contract, { identity, intent: {}, reviewDecision: "rejected" });
+    await reviewEffect(store, contract, { identity, decision: { decision: "rejected", reviewer: "reviewer@example.com" } });
+    await runEffect(store, contract, { identity, intent: {} });
 
     const again1 = await runEffect(store, contract, { identity, intent: {} });
-    const again2 = await runEffect(store, contract, { identity, intent: {}, reviewDecision: "approved" });
+    await reviewEffect(store, contract, { identity, decision: { decision: "approved", reviewer: "reviewer@example.com" } });
+    const again2 = await runEffect(store, contract, { identity, intent: {} });
     expect(again1.status).toBe("CLOSED");
     expect(again2.status).toBe("CLOSED");
     expect(again1.dispositionReason.code).toBe("POLICY_REVIEW_REJECTED");
@@ -66,7 +70,8 @@ describe("REVIEW rejection", () => {
     const identity = { id: "review-approve-1", operationType: contract.operationType };
 
     await runEffect(store, contract, { identity, intent: {} });
-    const approved = await runEffect(store, contract, { identity, intent: {}, reviewDecision: "approved" });
+    await reviewEffect(store, contract, { identity, decision: { decision: "approved", reviewer: "reviewer@example.com" } });
+    const approved = await runEffect(store, contract, { identity, intent: {} });
     expect(approved.disposition).toBe("COMPLETE");
     expect(executeCalls.count).toBe(1);
 

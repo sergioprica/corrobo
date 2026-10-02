@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryStore } from "../src/stores/memory";
-import { runEffect } from "../src/core/runtime";
+import { reviewEffect, runEffect } from "../src/core/runtime";
 import { createJevRefundContract, idempotencyKeyFor } from "../examples/jev-refund/contract";
 import { FakeRefundLedger } from "../examples/jev-refund/fake-refund-ledger";
 import { MockRefundJudgmentProvider } from "../examples/jev-refund/judgment-provider";
@@ -87,7 +87,9 @@ describe("Jev + corrobo refund example", () => {
     expect(awaiting.disposition).toBe("REVIEW");
     expect(ledger.createdRefundCount).toBe(0);
 
-    const approved = await runEffect(store, contract, { identity, intent, reviewDecision: "approved" });
+    await reviewEffect(store, contract, { identity, decision: { decision: "approved", reviewer: "reviewer@example.com" } });
+
+    const approved = await runEffect(store, contract, { identity, intent });
     expect(approved.disposition).toBe("COMPLETE");
     expect(approved.evidenceState).toBe("APPLIED");
     expect(ledger.createdRefundCount).toBe(1);

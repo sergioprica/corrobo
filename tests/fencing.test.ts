@@ -43,6 +43,7 @@ class LosableLockStore implements EffectStore {
   reserveAttempt: CoordinatedStore["reserveAttempt"] = (id, r, v) => this.inner.reserveAttempt(id, r, v);
   appendAttempt: CoordinatedStore["appendAttempt"] = (id, a, s, v) => this.inner.appendAttempt(id, a, s, v);
   updateLatestAttempt: CoordinatedStore["updateLatestAttempt"] = (id, a, s, v) => this.inner.updateLatestAttempt(id, a, s, v);
+  updateOperation: CoordinatedStore["updateOperation"] = (id, u, v) => this.inner.updateOperation(id, u, v);
   setStatus: CoordinatedStore["setStatus"] = (id, s, v) => this.inner.setStatus(id, s, v);
 }
 
@@ -311,6 +312,19 @@ describe("store-level fencing", () => {
     await expect(stale).rejects.toMatchObject({ identityId: "f1", expectedVersion: 0, actualVersion: 1 });
     const after = await store.getOperation("f1");
     expect(after?.status).toBe("OPEN");
+    expect(after?.version).toBe(1);
+  });
+
+  it("InMemoryStore: a stale updateOperation is rejected and changes nothing", async () => {
+    const store = new InMemoryStore();
+    await store.createOperation({ identity: { id: "f1u", operationType: "t" }, intent: {}, status: "OPEN" });
+    await store.reserveAttempt("f1u", { attemptNumber: 1, startedAt: new Date().toISOString() }, 0);
+
+    const stale = store.updateOperation("f1u", { status: "CLOSED", reviewReason: { code: "X", summary: "x" } }, 0);
+    await expect(stale).rejects.toBeInstanceOf(StoreConflictError);
+    const after = await store.getOperation("f1u");
+    expect(after?.status).toBe("OPEN");
+    expect(after?.reviewReason).toBeUndefined();
     expect(after?.version).toBe(1);
   });
 

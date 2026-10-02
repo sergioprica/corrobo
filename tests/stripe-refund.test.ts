@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryStore } from "../src/stores/memory";
-import { runEffect } from "../src/core/runtime";
+import { reviewEffect, runEffect } from "../src/core/runtime";
 import { createRefundContract, idempotencyKeyFor } from "../examples/stripe-refund/contract";
 import { FakeStripeClient } from "../examples/stripe-refund/fake-stripe-client";
 
@@ -219,7 +219,9 @@ describe("Stripe refund example", () => {
     expect(r1.evidenceState).toBeNull();
     expect(client.createdRefundCount).toBe(0);
 
-    const r2 = await runEffect(store, contract, { identity, intent, reviewDecision: "approved" });
+    await reviewEffect(store, contract, { identity, decision: { decision: "approved", reviewer: "reviewer@example.com" } });
+
+    const r2 = await runEffect(store, contract, { identity, intent });
     expect(r2.disposition).toBe("COMPLETE");
     expect(client.createdRefundCount).toBe(1);
   });

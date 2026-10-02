@@ -77,6 +77,29 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 7.2 | Approved | Executes exactly once | Once | T48 |
 | 7.3 | Rejected | Closed with `POLICY_REVIEW_REJECTED` | Never | T49 |
 | 7.4 | Called again after rejection | Stays closed | Never | T50 |
+| 7.5 | `revalidate()` runs before an attempt | Before every attempt, including the first, and before the attempt is reserved, with this call's `context`; a `proceed` is recorded on the attempt | Only on `proceed` | T116, T124 |
+| 7.6 | `revalidate()` says `reject` | `CLOSED`, `REPLAN` (new decision, new identity); the check is recorded on the operation; nothing reserved | Never | T117, T128 |
+| 7.7 | `revalidate()` says `requiresReview` | `AWAITING_REVIEW`, `REVIEW`; after approval it runs again (with the acting call's `context` and the approval) before anything executes, and can send it back to review | Not until approved *and* revalidated | T118, T119 |
+| 7.8 | `revalidate()` throws, or returns something that isn't a valid result (including one whose fields throw when read) | `REVALIDATION_FAILED`, operation stays `OPEN`, nothing reserved; a later call checks again | Not until a check passes | T120, T121, T133 |
+| 7.9 | Things changed between attempt 1 and attempt 2 (scope revoked, order cancelled) | Attempt 2 is stopped; attempt 1's evidence is still reported | No | T122 |
+| 7.10 | A late landing while `revalidate()` would now say no | The settlement re-check finds `APPLIED` → `COMPLETE`; `revalidate()` is never asked (it gates new effects, not finding out what happened) | No | T123 |
+| 7.11 | Approved after earlier attempts (revalidation sent attempt 2 to review) | The latest attempt is re-observed before executing, whether its transport failed or got a response; an effect found then is `COMPLETE`. Rejected instead: `CLOSED` with `POLICY_REVIEW_REJECTED`, attempt 1's evidence kept | Only if approved and still a settled `NOT_APPLIED` | T125, T130, T131, T132 |
+| 7.12 | Restart finds a reserved, unresolved attempt | Observes only; `revalidate()` isn't called because nothing executes | No | T126 |
+| 7.13 | Another pass writes while `revalidate()` runs (lost lock) | The reservation is version-checked and fails; nothing executes | No | T127 |
+| 7.14 | Approved with a `ReviewDecision` | Recorded on the operation with reviewer, times and the recorded intent's fingerprint, and copied onto the attempt it allowed; survives a restart | Once | T134, T140 |
+| 7.15 | Rejected with a `ReviewDecision` | `CLOSED`, `POLICY_REVIEW_REJECTED` naming the reviewer; a later decision can't replace it | Never | T135, T141 |
+| 7.16 | The reviewer was shown a different intent (`intentFingerprint` doesn't match) | Refused (throws); nothing recorded | Not on that approval | T136 |
+| 7.17 | Malformed decision passed to `reviewEffect()` (no reviewer, `expiresAt` on a rejection, a time that isn't strict RFC 3339 with `Z` or an offset, a date that doesn't exist…) | `TypeError` before anything is recorded; valid times are stored in one canonical UTC form | No | T137, T148 |
+| 7.18 | Approval already expired when it arrives | Refused (throws); nothing recorded | No | T138 |
+| 7.19 | Approval expires before a later attempt, or while `revalidate()` is running | `AWAITING_REVIEW` with `APPROVAL_EXPIRED`; checked again after `revalidate()` returns, at the time the attempt would start; a new approval allows the attempt | Not until re-approved | T139, T144, T147 |
+| 7.20 | Approval no longer matches the recorded intent under the contract's current fingerprint rules | `AWAITING_REVIEW` with `APPROVAL_INTENT_MISMATCH` | Not until re-approved | T142 |
+| 7.21 | Approver policy (e.g. no self-approval) | Up to `revalidate()`, which receives the approval and this call's `context` | Only when it says `proceed` | T143 |
+| 7.22 | `runEffect()` called with 0.3's `reviewDecision: "approved"` / `"rejected"` | `TypeError` pointing to `reviewEffect()`; nothing recorded. `runEffect()` has no way to approve | No | T145 |
+| 7.23 | An operation approved by 0.3.x, which recorded no decision (or any approval on record without a reviewer), after upgrading | `AWAITING_REVIEW` with `APPROVAL_NOT_RECORDED` before any further attempt | Not until re-approved | T149, T150, T159 |
+| 7.24 | `reviewEffect()` records a decision | Records it and nothing else: no `execute()`, no `observe()`; the result says approved, not attempted since (also after earlier attempts); the next `runEffect()` attempts | Not by `reviewEffect()` | T151, T155 |
+| 7.25 | `runEffect()` is handed a decision object (e.g. by an agent's tool) | `TypeError`, nothing recorded: decisions only go through `reviewEffect()` | No | T152 |
+| 7.26 | `reviewEffect()` while another call holds the operation (or writes to it mid-review), or on one that isn't awaiting review | Busy: `OperationBusyError`, nothing recorded. Not awaiting review: current state returned, nothing recorded | No | T153, T154, T156, T157 |
+| 7.27 | Approved (separately) after an attempt that got a not-applied response | The next `runEffect()` re-observes that attempt first (also if the review record lacks its attempt count); an effect that appeared during the wait is `COMPLETE` | No | T155, T158 |
 
 ## 8. Concurrency and lock loss
 
@@ -123,6 +146,7 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 10.7 | Nested evidence, observations, reason metadata | Round-trip through Postgres exactly | T84, T85 |
 | 10.8 | Retention | No automatic expiry or deletion; retention is yours | T86 |
 | 10.9 | Upgrading from 0.2.x | `migrate()` adds `version` in place; old reserved rows recover; old transport-failure `RETRY`s are re-checked under current rules | T89, T90, T91 |
+| 10.10 | Upgrading from 0.3.x | `migrate()` adds `blocked_by` and `review` in place; existing rows keep their state and version, and a 0.3.x rejection still reads as rejected | T129, T146 |
 
 Error **messages** are still persisted: if your code puts secrets into an error message, intent, observation or reason metadata, they are stored as you wrote them.
 
@@ -267,3 +291,47 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 - **T113** [`tests/postgres-failure-catalog.test.ts`](../tests/postgres-failure-catalog.test.ts) — "%s: stored intent == the single reading; a later, different reading is a conflict"
 - **T114** [`tests/helpers.test.ts`](../tests/helpers.test.ts) — "an explicit identity whose operationType disagrees with the contract is rejected before anything happens"
 - **T115** [`tests/helpers.test.ts`](../tests/helpers.test.ts) — "identity as a string is shorthand for { id, operationType: contract.operationType }"
+- **T116** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "runs once, before the attempt is reserved, with the attempt number, this call's context and the record"
+- **T117** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "reject: nothing is executed or reserved; CLOSED with REPLAN, and later calls never execute"
+- **T118** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "requiresReview: AWAITING_REVIEW with the hook's reason; after approval it runs again, with the acting call's context and the approval"
+- **T119** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "an approval that revalidate() still won't accept goes back to review instead of executing"
+- **T120** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "a throw: nothing executed or reserved, the operation stays OPEN with REVALIDATION_FAILED, and a later call checks again"
+- **T121** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "returning %s fails closed"
+- **T122** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "runs before attempt 2 with that call's context (a background worker), and can stop it; attempt 1's evidence is still reported"
+- **T123** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "a late landing found by the settlement check is APPLIED, and revalidate() is never asked about it"
+- **T124** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "order: settlement check first, then revalidate(), then reserve and execute"
+- **T125** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "requiresReview before attempt 2, then approved: the settlement check runs again before executing"
+- **T126** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "recovering a reserved attempt after a crash never calls revalidate() (it never executes)"
+- **T127** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "if another pass writes while revalidate() runs (lost lock), this pass executes nothing"
+- **T128** [`tests/postgres-revalidate.test.ts`](../tests/postgres-revalidate.test.ts) — "a reject is persisted on the operation and reported from a fresh read"
+- **T129** [`tests/postgres-revalidate.test.ts`](../tests/postgres-revalidate.test.ts) — "migrate() upgrades a 0.3.x table in place (adds blocked_by) and keeps its rows"
+- **T130** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "requiresReview before attempt 2, then rejected in review: CLOSED as rejected, not as a pending RETRY"
+- **T131** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "requiresReview after a definitive not-applied response, then approved: re-observed first, so an effect that appeared meanwhile isn't repeated"
+- **T132** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "requiresReview after a definitive not-applied response, then approved and still not applied: one new attempt"
+- **T133** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "a result whose fields throw when read fails closed like a throw, and only code, summary and metadata of a reason are kept"
+- **T134** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval is recorded with who, when and the intent it applies to, and the attempt it allowed carries it"
+- **T135** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a rejection records who rejected it, says so in the result, and nothing is executed"
+- **T136** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval made for a different intent than the recorded one is refused, and nothing changes"
+- **T137** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a malformed reviewDecision (%s) throws before anything is recorded or executed"
+- **T138** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval that has already expired when it arrives is refused, and nothing changes"
+- **T139** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval that expires before a later attempt sends it back to review instead of executing"
+- **T140** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "an approval survives a restart: the review, and the approval on the attempt it allowed, read back exactly"
+- **T141** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "a rejection is recorded with the reviewer and reported from a fresh read"
+- **T142** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval whose intent no longer matches the recorded one (the fingerprint rules changed) goes back to review"
+- **T143** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "revalidate() receives the approval and can enforce approver policy (no self-approval)"
+- **T144** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a crash after the approval is recorded but before the attempt: the next call checks the approval again"
+- **T145** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "runEffect() refuses the reviewDecision field corrobo 0.3 took, and nothing is recorded or executed"
+- **T146** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "migrate() adds the review column to an older table and keeps its rows"
+- **T147** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval that expires while revalidate() runs doesn't allow the attempt, and the attempt starts at the time it was checked"
+- **T148** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "times with an offset are recorded in one canonical UTC form"
+- **T149** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an operation approved by corrobo 0.3.x (no recorded decision) needs a new review %s"
+- **T150** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "a row approved under 0.3.x (OPEN, a review reason, no recorded decision) needs a new review before any attempt"
+- **T151** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "records the decision and does nothing else: no execute, no observe; runEffect() then makes the attempt"
+- **T152** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "runEffect() refuses a decision object: decisions go through reviewEffect()"
+- **T153** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "while another call holds the operation it throws OperationBusyError and records nothing"
+- **T154** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an operation that isn't awaiting review is returned unchanged, and the decision isn't recorded"
+- **T155** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "approved after an attempt that got a not-applied response: the next runEffect() re-observes first, so an effect that appeared meanwhile isn't repeated"
+- **T156** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "reviewEffect() throws OperationBusyError while another process holds the operation's advisory lock"
+- **T157** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a concurrent write while the decision is being recorded is OperationBusyError, and the decision isn't recorded"
+- **T158** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a review record without attemptCount is treated as recent: the next runEffect() re-observes first"
+- **T159** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval on record without a reviewer isn't honored: it needs a new review"
