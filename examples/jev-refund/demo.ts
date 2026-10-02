@@ -1,4 +1,4 @@
-import { InMemoryStore, runEffect } from "../../src/core";
+import { InMemoryStore, reviewEffect, runEffect } from "../../src/core";
 import { createJevRefundContract, idempotencyKeyFor } from "./contract";
 import { FakeRefundLedger } from "./fake-refund-ledger";
 import { MockRefundJudgmentProvider } from "./judgment-provider";
@@ -48,7 +48,9 @@ async function main(): Promise<void> {
   });
   console.log(`proof the effect was NOT executed while awaiting review: createdRefundCount === ${ledger.createdRefundCount} (expect 1, unchanged from A)`);
 
-  const resultB2 = await runEffect(store, contract, { identity: identityB, intent: intentB, reviewDecision: { decision: "approved", reviewer: "ops@example.com" } });
+  // The review screen records the decision; the worker then acts on it.
+  await reviewEffect(store, contract, { identity: identityB, decision: { decision: "approved", reviewer: "ops@example.com" } });
+  const resultB2 = await runEffect(store, contract, { identity: identityB, intent: intentB });
   log("B (continued). after human approval -> executes, APPLIED / COMPLETE", {
     evidenceState: resultB2.evidenceState,
     disposition: resultB2.disposition,

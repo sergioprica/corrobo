@@ -92,9 +92,10 @@ export interface RevalidationResult {
 }
 
 /**
- * A reviewer's decision on an operation left AWAITING_REVIEW (issue #28). corrobo records it,
- * binds it to the recorded intent and enforces `expiresAt`; establishing that `reviewer` really
- * is who they say, and may approve this, is your app's job (in revalidate(), or before calling).
+ * A reviewer's decision on an operation left AWAITING_REVIEW, passed to reviewEffect() (issue
+ * #28). corrobo records it, binds it to the recorded intent and enforces `expiresAt`;
+ * establishing that `reviewer` really is who they say, and may approve this, is your app's job
+ * (before calling reviewEffect(), and in revalidate()).
  */
 export interface ReviewDecision {
   decision: "approved" | "rejected";
@@ -130,6 +131,19 @@ export interface RecordedReview {
   intentFingerprint: string;
   /** When corrobo recorded it, from the store's clock when it has one. */
   recordedAt: string;
+  /**
+   * How many attempts were recorded when the decision was. When an approval follows earlier
+   * attempts, the next runEffect() re-observes the latest one before executing again: time
+   * passed while the operation waited for review.
+   */
+  attemptCount: number;
+}
+
+/** What reviewEffect() takes: which operation, and the reviewer's decision on it. */
+export interface ReviewRequest {
+  /** The operation's identity, exactly as runEffect() was given it (a string id or the object form). */
+  identity: OperationIdentity | string;
+  decision: ReviewDecision;
 }
 
 export interface RevalidateInput<Intent, Context> {
@@ -348,11 +362,12 @@ export interface EffectRequest<Intent, Context = unknown> {
   identity: OperationIdentity | string;
   intent: Intent;
   /**
-   * Set on a subsequent call to resolve an operation left AWAITING_REVIEW. Pass it only from
-   * your own review flow, never from anything a model can call. The string form is deprecated:
-   * it records no reviewer.
+   * @deprecated Use reviewEffect() to record a decision (with who made it), then runEffect()
+   * to act on it. This form records no reviewer, and couples the decision to the call that
+   * executes: while it exists, never let a model or a worker set it (leave it out of any tool
+   * schema). It still works in 0.4 and will be removed in 0.5.
    */
-  reviewDecision?: ReviewDecision | "approved" | "rejected";
+  reviewDecision?: "approved" | "rejected";
   /**
    * Who is calling and with what scope, for authorize() and revalidate() to check. Per call:
    * not stored, not part of the intent's fingerprint.

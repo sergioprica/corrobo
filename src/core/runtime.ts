@@ -18,6 +18,7 @@ import type {
   ReasonCode,
   RecordedReview,
   ReviewDecision,
+  ReviewRequest,
   ReservedAttempt,
   ResolvedAttempt,
   TransportOutcome
@@ -107,12 +108,28 @@ function prepareIntent<Intent>(contract: EffectContract<Intent, unknown, unknown
   return { stored, fingerprint: canonicalStringify(stored) };
 }
 
+/** A review decision after validation; the deprecated runEffect() strings have reviewer null. */
+type ValidDecision = Omit<ReviewDecision, "reviewer"> & { reviewer: string | null };
+
 /** An EffectRequest after identity shorthand is resolved (see runEffect). */
 type ResolvedRequest<Intent, Context = unknown> = Omit<EffectRequest<Intent, Context>, "identity" | "reviewDecision"> & {
   identity: OperationIdentity;
-  /** reviewDecision, validated; the deprecated string form has reviewer null. */
-  review?: Omit<ReviewDecision, "reviewer"> & { reviewer: string | null };
+  /** The deprecated reviewDecision string, as a decision with no reviewer. */
+  review?: ValidDecision;
 };
+
+/**
+ * Thrown by reviewEffect() when another call holds this operation right now (it is being
+ * attempted, re-observed or reviewed). Nothing was recorded; try again shortly.
+ */
+export class OperationBusyError extends Error {
+  readonly identityId: string;
+  constructor(identityId: string) {
+    super(`corrobo: operation "${identityId}" is busy (another call holds it); the review decision was not recorded. Try again.`);
+    this.name = "OperationBusyError";
+    this.identityId = identityId;
+  }
+}
 
 const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,9})?(Z|[+-](\d{2}):(\d{2}))$/i;
 
@@ -141,14 +158,22 @@ function canonicalTime(value: unknown): string | null {
   return /^\d{4}-/.test(canonical) ? canonical : null;
 }
 
-/** Validates a reviewDecision before anything runs: a malformed approval must never count as one. */
-function normalizeReviewDecision(input: EffectRequest<unknown>["reviewDecision"]): ResolvedRequest<unknown>["review"] {
+/** runEffect()'s deprecated reviewDecision: only the two strings; a decision object belongs to reviewEffect(). */
+function legacyReviewDecision(input: unknown): ValidDecision | undefined {
   if (input === undefined) return undefined;
   if (input === "approved" || input === "rejected") return { decision: input, reviewer: null };
+  throw new TypeError(
+    `corrobo: runEffect()'s reviewDecision only accepts the deprecated "approved" / "rejected". Record a ` +
+      `ReviewDecision with reviewEffect(), then call runEffect() to act on it; nothing was recorded or executed.`
+  );
+}
+
+/** Validates a ReviewDecision before anything runs: a malformed approval must never count as one. */
+function parseReviewDecision(input: unknown): ValidDecision {
   const fail = (problem: string): never => {
-    throw new TypeError(`corrobo: reviewDecision ${problem}; nothing was recorded or executed.`);
+    throw new TypeError(`corrobo: the review decision ${problem}; nothing was recorded.`);
   };
-  if (typeof input !== "object" || input === null) fail(`must be a ReviewDecision object (or "approved" / "rejected")`);
+  if (typeof input !== "object" || input === null) fail(`must be a ReviewDecision object`);
   // Each field is read exactly once, so what is validated is what is recorded.
   const { decision, reviewer, decidedAt, expiresAt, intentFingerprint, note } = input as ReviewDecision;
   if (decision !== "approved" && decision !== "rejected") fail(`.decision must be "approved" or "rejected"`);
@@ -165,7 +190,7 @@ function normalizeReviewDecision(input: EffectRequest<unknown>["reviewDecision"]
   }
   if (intentFingerprint !== undefined && typeof intentFingerprint !== "string") fail(`.intentFingerprint must be a string`);
   if (note !== undefined && typeof note !== "string") fail(`.note must be a string`);
-  const review: NonNullable<ResolvedRequest<unknown>["review"]> = { decision, reviewer };
+  const review: ValidDecision = { decision, reviewer };
   if (decided !== undefined) review.decidedAt = decided;
   if (expires !== undefined) review.expiresAt = expires;
   if (intentFingerprint !== undefined) review.intentFingerprint = intentFingerprint;
@@ -178,20 +203,25 @@ function resolveRequest<Intent, Context>(
   input: EffectRequest<Intent, Context>
 ): ResolvedRequest<Intent, Context> {
   const { reviewDecision, ...rest } = input;
-  const review = normalizeReviewDecision(reviewDecision);
+  const review = legacyReviewDecision(reviewDecision);
   const request: Omit<ResolvedRequest<Intent, Context>, "identity"> & { identity: OperationIdentity | string } =
     review ? { ...rest, review } : rest;
-  if (typeof request.identity === "string") {
-    return { ...request, identity: { id: request.identity, operationType: contract.operationType } };
+  return { ...request, identity: resolveIdentity(contract as EffectContract<unknown, unknown, unknown>, request.identity) };
+}
+
+/** A string id is shorthand for { id, operationType: contract.operationType }; an object's type must match. */
+function resolveIdentity(contract: EffectContract<unknown, unknown, unknown>, identity: OperationIdentity | string): OperationIdentity {
+  if (typeof identity === "string") {
+    return { id: identity, operationType: contract.operationType };
   }
-  if (request.identity.operationType !== contract.operationType) {
+  if (identity?.operationType !== contract.operationType) {
     throw new Error(
-      `corrobo: this request's identity says operationType "${request.identity.operationType}", but the ` +
+      `corrobo: this request's identity says operationType "${identity?.operationType}", but the ` +
         `contract is "${contract.operationType}". Pass identity as a plain string id to use the contract's ` +
         `operationType, or run it with the matching contract.`
     );
   }
-  return request as ResolvedRequest<Intent, Context>;
+  return identity;
 }
 
 function assertSameLogicalOperation<Intent>(
@@ -281,6 +311,15 @@ function resultBeforeAttempt<Observation>(
   };
 }
 
+function approvedNotAttempted(review: RecordedReview): ReasonCode {
+  return {
+    code: "REVIEW_APPROVED",
+    summary:
+      `Approved in review${review.reviewer ? ` by ${review.reviewer}` : ""}; not attempted yet since. ` +
+      "The next runEffect() call checks the approval and makes the attempt."
+  };
+}
+
 function rejectedInReview(review: RecordedReview | undefined): ReasonCode {
   return {
     code: "POLICY_REVIEW_REJECTED",
@@ -322,8 +361,11 @@ function resultFromRecord<Observation>(record: OperationRecord): EffectResult<Ob
   }
 
   if (!latest) {
-    // Not reachable: an operation with no attempt is AWAITING_REVIEW, CLOSED (above), or OPEN
-    // only for the instant before its first reservation. Report it as not yet attempted.
+    if (record.review?.decision === "approved") {
+      return resultBeforeAttempt(record, null, approvedNotAttempted(record.review));
+    }
+    // Otherwise an operation with no attempt is AWAITING_REVIEW, CLOSED (above), or OPEN only
+    // for the instant before its first reservation. Report it as not yet attempted.
     return resultBeforeAttempt(record, null, {
       code: "OPERATION_IN_PROGRESS",
       summary: "No attempt has been recorded yet. Call run() again shortly for a result."
@@ -792,6 +834,69 @@ export async function runEffect<Intent, Observation, Evidence, Context = unknown
   }
 }
 
+/**
+ * Records a reviewer's decision on an operation left AWAITING_REVIEW, and nothing else: it never
+ * executes or observes. Call it from your own review flow (never from anything a model can
+ * call), then let runEffect() act on the operation, which checks the approval again before
+ * every attempt. Keeping the two apart means the code that makes attempts can't approve them.
+ *
+ * - The decision is validated first (a malformed one throws TypeError) and bound to the recorded
+ *   intent: if `decision.intentFingerprint` names a different intent, or an approval has already
+ *   expired, it throws and nothing changes.
+ * - Approved: the operation becomes OPEN; the result says it hasn't been attempted since.
+ *   Rejected: CLOSED, terminally.
+ * - If the operation isn't awaiting review (already decided, never needed review, closed), the
+ *   decision is not recorded and the current state is returned; compare `result.review`.
+ * - If another call holds the operation's lock right now, throws OperationBusyError (nothing
+ *   recorded). Like runEffect(), it first needs a connection from the store (for PostgresStore,
+ *   from your pool), and waits for one if the pool is exhausted; it then re-reads and re-checks
+ *   everything under the lock, so a decision recorded after such a wait is still checked
+ *   against the operation as it is then.
+ */
+export async function reviewEffect<Intent, Observation, Evidence, Context = unknown>(
+  store: EffectStore,
+  contract: EffectContract<Intent, Observation, Evidence, Context>,
+  request: ReviewRequest
+): Promise<EffectResult<Observation>> {
+  const identity = resolveIdentity(contract as EffectContract<unknown, unknown, unknown>, request?.identity);
+  const decision = parseReviewDecision(request?.decision);
+  const lock = await store.tryAcquireLock(identity.id);
+  if (!lock) {
+    throw new OperationBusyError(identity.id);
+  }
+  try {
+    const existing = await lock.store.getOperation(identity.id);
+    if (!existing) {
+      throw new Error(`corrobo: no operation "${identity.id}" to review; runEffect() creates it (and authorize() sends it to review).`);
+    }
+    if (existing.identity.operationType !== contract.operationType) {
+      throw new Error(
+        `corrobo: operation "${identity.id}" has operationType "${existing.identity.operationType}", but this ` +
+          `review was made with the "${contract.operationType}" contract; nothing was recorded.`
+      );
+    }
+    if (existing.status !== "AWAITING_REVIEW") {
+      return resultFromRecord(existing);
+    }
+    const review = await recordReview(lock.store, contract, existing, decision);
+    const updated = await lock.store.updateOperation(
+      identity.id,
+      { status: review.decision === "approved" ? "OPEN" : "CLOSED", review },
+      existing.version
+    );
+    // Approved: say so, even after earlier attempts (whose last disposition no longer describes
+    // what happens next): nothing has been attempted since, the next runEffect() will.
+    return review.decision === "approved" ? resultBeforeAttempt(updated, null, approvedNotAttempted(review)) : resultFromRecord(updated);
+  } catch (err) {
+    if (err instanceof StoreConflictError) {
+      throw new OperationBusyError(identity.id);
+    }
+    throw err;
+  } finally {
+    await lock.release();
+  }
+}
+
 async function runCoordinated<Intent, Observation, Evidence, Context>(
   store: CoordinatedStore,
   contract: EffectContract<Intent, Observation, Evidence, Context>,
@@ -835,12 +940,10 @@ async function runCoordinated<Intent, Observation, Evidence, Context>(
       const closed = await store.updateOperation(existing.identity.id, { status: "CLOSED", review }, existing.version);
       return resultFromRecord(closed);
     }
-    // Approved: continue as an OPEN operation would. With no attempt yet that is the first
-    // attempt. After earlier attempts (revalidate() asked for review before attempt N), time has
-    // passed while it waited, so the latest attempt is re-observed before anything executes
-    // again, even if its NOT_APPLIED was final when it was recorded.
+    // Approved (deprecated path: decided and acted on in one call): continue as an OPEN
+    // operation would; see continueOpen for the re-observation after a review wait.
     const reopened = await store.updateOperation(existing.identity.id, { status: "OPEN", review }, existing.version);
-    return await continueOpen(store, contract, reopened, request, { reobserveFirst: true });
+    return await continueOpen(store, contract, reopened, request);
   }
 
   return await continueOpen(store, contract, existing, request);
@@ -854,7 +957,7 @@ async function recordReview(
   store: CoordinatedStore,
   contract: EffectContract<any, unknown, unknown, any>,
   record: OperationRecord,
-  decision: NonNullable<ResolvedRequest<unknown>["review"]>
+  decision: ValidDecision
 ): Promise<RecordedReview> {
   const intentFingerprint = fingerprintIntent(contract, record.intent);
   if (decision.intentFingerprint !== undefined && decision.intentFingerprint !== intentFingerprint) {
@@ -876,7 +979,8 @@ async function recordReview(
     reviewer: decision.reviewer,
     decidedAt: decision.decidedAt ?? now,
     intentFingerprint,
-    recordedAt: now
+    recordedAt: now,
+    attemptCount: record.attempts.length
   };
   if (decision.expiresAt !== undefined) review.expiresAt = decision.expiresAt;
   if (decision.note !== undefined) review.note = decision.note;
@@ -887,10 +991,16 @@ async function continueOpen<Intent, Observation, Evidence, Context>(
   store: CoordinatedStore,
   contract: EffectContract<Intent, Observation, Evidence, Context>,
   existing: OperationRecord,
-  request: ResolvedRequest<Intent, Context>,
-  options: { reobserveFirst?: boolean } = {}
+  request: ResolvedRequest<Intent, Context>
 ): Promise<EffectResult<Observation>> {
   const latest = existing.attempts[existing.attempts.length - 1];
+  // Approved after the latest attempt (revalidate() asked for review before the next one):
+  // time has passed while it waited, so that attempt is re-observed before anything executes
+  // again, even if its NOT_APPLIED was final when it was recorded.
+  // A review without attemptCount (written by a store that dropped it) is treated as recent.
+  const approvedSinceLatest =
+    existing.review?.decision === "approved" &&
+    (typeof existing.review.attemptCount !== "number" || existing.review.attemptCount === existing.attempts.length);
   if (!latest) {
     return await checkThenAttempt(store, contract, existing, request);
   }
@@ -904,7 +1014,7 @@ async function continueOpen<Intent, Observation, Evidence, Context>(
   }
 
   if (latest.disposition === "RETRY") {
-    if (latest.transport.ok && !options.reobserveFirst) {
+    if (latest.transport.ok && !approvedSinceLatest) {
       // execute() returned a response: that request is finished, the NOT_APPLIED was final.
       return await checkThenAttempt(store, contract, existing, request);
     }
