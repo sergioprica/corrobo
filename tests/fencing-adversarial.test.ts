@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryStore } from "../src/stores/memory";
 import { runEffect, StoreConflictError } from "../src/core";
-import type { CoordinatedStore, EffectStore, NewOperationInput } from "../src/core/store";
+import type { CoordinatedStore, EffectStore, NewOperationInput, OperationUpdate } from "../src/core/store";
 import type {
   AttemptRecord,
   EffectContract,
@@ -107,6 +107,8 @@ class EarlyReleaseAfterReserveStore {
         lock.store.appendAttempt(id, attempt, status, expectedVersion),
       updateLatestAttempt: (id: string, attempt: AttemptRecord, status: OperationStatus, expectedVersion: number) =>
         lock.store.updateLatestAttempt(id, attempt, status, expectedVersion),
+      updateOperation: (id: string, update: OperationUpdate, expectedVersion: number) =>
+        lock.store.updateOperation(id, update, expectedVersion),
       setStatus: (id: string, status: OperationStatus, expectedVersion: number) =>
         lock.store.setStatus(id, status, expectedVersion)
     } as unknown as CoordinatedStore;
@@ -149,6 +151,10 @@ class EarlyReleaseAfterReserveStore {
     return this.inner.updateLatestAttempt(identityId, attempt, status, expectedVersion);
   }
 
+  updateOperation(identityId: string, update: OperationUpdate, expectedVersion: number): Promise<OperationRecord> {
+    return this.inner.updateOperation(identityId, update, expectedVersion);
+  }
+
   setStatus(identityId: string, status: OperationStatus, expectedVersion: number): Promise<OperationRecord> {
     return this.inner.setStatus(identityId, status, expectedVersion);
   }
@@ -181,6 +187,8 @@ class ConcurrentReservationStore {
         this.inner.appendAttempt(id, attempt, status, expectedVersion),
       updateLatestAttempt: (id: string, attempt: AttemptRecord, status: OperationStatus, expectedVersion: number) =>
         this.inner.updateLatestAttempt(id, attempt, status, expectedVersion),
+      updateOperation: (id: string, update: OperationUpdate, expectedVersion: number) =>
+        this.inner.updateOperation(id, update, expectedVersion),
       setStatus: (id: string, status: OperationStatus, expectedVersion: number) =>
         this.inner.setStatus(id, status, expectedVersion)
     } as unknown as CoordinatedStore;
@@ -216,6 +224,10 @@ class ConcurrentReservationStore {
     expectedVersion: number
   ): Promise<OperationRecord> {
     return this.inner.updateLatestAttempt(identityId, attempt, status, expectedVersion);
+  }
+
+  updateOperation(identityId: string, update: OperationUpdate, expectedVersion: number): Promise<OperationRecord> {
+    return this.inner.updateOperation(identityId, update, expectedVersion);
   }
 
   setStatus(identityId: string, status: OperationStatus, expectedVersion: number): Promise<OperationRecord> {
