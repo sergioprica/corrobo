@@ -19,7 +19,6 @@ Pre-execute checks for agent runtimes: `revalidate()` before every attempt, and 
 - `authorize()` now also receives `{ identity, context }`.
 - `corrobo/package.json` is exported, so `require("corrobo/package.json")` works.
 - **Attributed review decisions** ([#28](https://github.com/vidithsalla/corrobo/issues/28)). `reviewDecision` takes `{ decision, reviewer, decidedAt?, expiresAt?, intentFingerprint?, note? }`, validated before anything runs (times must be strict RFC 3339 with `Z` or an offset). It's recorded on the operation (`OperationRecord.review`, `EffectResult.review`) with the recorded intent's fingerprint, and copied onto each attempt it allowed. A decision made for a different intent is refused. An expired approval, or one that no longer matches the recorded intent, sends the operation back to review before any further attempt. `revalidate()` receives the approval so it can check approver policy. See [spec §M](docs/v0.1-spec.md#m-review-decisions).
-
 - Docs: [where the identity comes from](README.md#where-the-identity-comes-from). Mint it server-side when the action is confirmed and store it with the action, because the same intent with a new identity is a new effect.
 - Example: [`examples/action-table`](examples/action-table) links corrobo's record to an app's own table of actions (`npm run example:action-table`). It's tested against Postgres, including the restart sweep and an operator join.
 
