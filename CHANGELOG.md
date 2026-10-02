@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Docs: [where the identity comes from](README.md#where-the-identity-comes-from). Mint it server-side when the action is confirmed and store it with the action, because the same intent with a new identity is a new effect.
+- Example: [`examples/action-table`](examples/action-table) links corrobo's record to an app's own table of actions (`npm run example:action-table`). It's tested against Postgres, including the restart sweep and an operator join.
+
+Thanks to Ömer Faruk Koç ([@negativexq](https://github.com/negativexq)) for the review that prompted both.
+
 ## 0.3.0 — 2026-09-30
 
 ### Upgrading from 0.2.x
