@@ -132,7 +132,7 @@ const store = new PostgresStore(pool, { acknowledgePersistence: true });
 - **Concurrency:** callers racing on the same identity are coordinated with a Postgres advisory lock; different identities run in parallel. Each operation in flight holds one pool connection for its whole pass, so size `max` on your `Pool` for the operations you run at once, plus whatever else uses that pool.
 - **Lost locks:** if the lock's connection dies while `execute()` is still running, version-checked writes keep the stale caller from overwriting anything, and the late-landing rule keeps the next caller from re-executing too early. Time windows use the database's clock, so skew between hosts doesn't matter.
 - `acknowledgePersistence: true` is required on purpose: this store keeps what your contracts produce, with no automatic expiry (see [privacy](#privacy-and-data-handling)).
-- **Upgrading from 0.2.x:** drain 0.2.x workers first, then run `migrate()` once. See [upgrade notes](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
+- **Upgrading:** drain workers on the old version first, then run `migrate()` once. From 0.3.x it adds two nullable columns, and operations approved under 0.3.x need a new review before any further attempt; see the [changelog](CHANGELOG.md). From 0.2.x, see also the [0.3 upgrade notes](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
 
 ## Guarantees
 
