@@ -101,7 +101,7 @@ When `authorize()` returns `requiresReview: true`, corrobo's runtime sets the op
 `AWAITING_REVIEW` and returns disposition `REVIEW` **without ever calling `execute()`**. The
 [example demo](../examples/jev-refund/demo.ts) (scenario B) proves this directly: it asserts the
 fake refund ledger's `createdRefundCount` is unchanged while an operation is awaiting review, and
-only increments after an explicit `reviewDecision: "approved"` call.
+only increments after an explicit approval (`reviewDecision: { decision: "approved", reviewer }`).
 
 ## 8. Authoritative observation after execution
 

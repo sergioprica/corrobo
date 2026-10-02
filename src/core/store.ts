@@ -2,6 +2,7 @@ import type {
   AttemptRecord,
   BlockingCheck,
   OperationIdentity,
+  RecordedReview,
   OperationRecord,
   OperationStatus,
   ReasonCode,
@@ -48,6 +49,7 @@ export interface OperationUpdate {
   status?: OperationStatus;
   reviewReason?: ReasonCode | null;
   blockedBy?: BlockingCheck | null;
+  review?: RecordedReview | null;
 }
 
 /**

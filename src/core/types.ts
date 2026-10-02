@@ -91,11 +91,56 @@ export interface RevalidationResult {
   reason?: ReasonCode;
 }
 
+/**
+ * A reviewer's decision on an operation left AWAITING_REVIEW (issue #28). corrobo records it,
+ * binds it to the recorded intent and enforces `expiresAt`; establishing that `reviewer` really
+ * is who they say, and may approve this, is your app's job (in revalidate(), or before calling).
+ */
+export interface ReviewDecision {
+  decision: "approved" | "rejected";
+  /** Who decided, as your app identifies them (a user id, an email). Required, non-empty. */
+  reviewer: string;
+  /** When they decided (ISO). Defaults to when corrobo records it. */
+  decidedAt?: string;
+  /**
+   * Approvals only (ISO): no attempt is started at or after this time. A later attempt (a retry
+   * after the first one failed, say) sends the operation back to review with APPROVAL_EXPIRED.
+   */
+  expiresAt?: string;
+  /**
+   * The fingerprint of the intent the reviewer was shown: `fingerprintIntent(contract, intent)`.
+   * When given and it differs from the recorded intent's, the decision is refused (throws) and
+   * nothing changes, so an approval of what was on screen can't apply to something else.
+   */
+  intentFingerprint?: string;
+  note?: string;
+}
+
+/** A review decision as corrobo recorded it on the operation (OperationRecord.review). */
+export interface RecordedReview {
+  decision: "approved" | "rejected";
+  /** null only for a decision given in the deprecated string form ("approved" / "rejected"). */
+  reviewer: string | null;
+  decidedAt: string;
+  expiresAt?: string;
+  note?: string;
+  /** Fingerprint of the recorded intent this decision applies to. */
+  intentFingerprint: string;
+  /** When corrobo recorded it, from the store's clock when it has one. */
+  recordedAt: string;
+}
+
 export interface RevalidateInput<Intent, Context> {
   intent: Intent;
   identity: OperationIdentity;
   /** The attempt about to be made: 1 for the first. */
   attemptNumber: number;
+  /**
+   * The approval this operation is proceeding under, if it went through review (already
+   * checked by corrobo against the recorded intent and its expiresAt). Check your own approver
+   * policy here: who may approve what, whether the approver is the requester, and so on.
+   */
+  approval: RecordedReview | null;
   /** The operation as recorded right now (earlier attempts, status). Changing it changes nothing. */
   record: OperationRecord;
   /**
@@ -106,13 +151,17 @@ export interface RevalidateInput<Intent, Context> {
 }
 
 /**
- * The recorded result of running revalidate() before an attempt. `failed` means revalidate()
- * threw or returned something that isn't a RevalidationResult: nothing was executed and the
- * operation stays OPEN, so a later call checks again.
+ * What was checked before an attempt: revalidate()'s result, and/or corrobo's own checks of the
+ * approval (APPROVAL_EXPIRED, APPROVAL_INTENT_MISMATCH). Recorded whenever the contract has
+ * revalidate() or the operation went through review. `failed` means revalidate() threw or
+ * returned something that isn't a RevalidationResult: nothing was executed and the operation
+ * stays OPEN, so a later call checks again.
  */
 export interface PreExecuteCheck {
   outcome: "proceed" | "requiresReview" | "reject" | "failed";
   reason: ReasonCode;
+  /** The approval in force when the check ran, if the operation went through review. */
+  approval?: RecordedReview;
   /** The attempt this check was for. */
   attemptNumber: number;
   /** From the store's clock when it has one (see CoordinatedStore.now). */
@@ -219,7 +268,7 @@ export interface ReservedAttempt {
   attemptNumber: number;
   startedAt: string;
   updatedAt: string;
-  /** revalidate()'s result for this attempt, when the contract has one. */
+  /** What was checked before this attempt (see PreExecuteCheck), when anything was. */
   check?: PreExecuteCheck;
 }
 
@@ -245,7 +294,7 @@ export interface ResolvedAttempt {
    * runEffect() will not execute again before this time, and re-observes first after it.
    */
   retryNotBefore?: string;
-  /** revalidate()'s result for this attempt, when the contract has one. */
+  /** What was checked before this attempt (see PreExecuteCheck), when anything was. */
   check?: PreExecuteCheck;
 }
 
@@ -273,8 +322,10 @@ export interface OperationRecord {
   /** Set only when status is (or was) AWAITING_REVIEW — no attempt exists yet to carry this reason. */
   reviewReason?: ReasonCode;
   attempts: AttemptRecord[];
-  /** The most recent revalidate() result that stopped an attempt (see BlockingCheck.recordVersion). */
+  /** The most recent check that stopped an attempt (see BlockingCheck.recordVersion). */
   blockedBy?: BlockingCheck;
+  /** The latest review decision, when the operation went through review. */
+  review?: RecordedReview;
   createdAt: string;
   updatedAt: string;
   /**
@@ -293,8 +344,12 @@ export interface EffectRequest<Intent, Context = unknown> {
    */
   identity: OperationIdentity | string;
   intent: Intent;
-  /** Set on a subsequent call to resolve an operation left AWAITING_REVIEW. */
-  reviewDecision?: "approved" | "rejected";
+  /**
+   * Set on a subsequent call to resolve an operation left AWAITING_REVIEW. Pass it only from
+   * your own review flow, never from anything a model can call. The string form is deprecated:
+   * it records no reviewer.
+   */
+  reviewDecision?: ReviewDecision | "approved" | "rejected";
   /**
    * Who is calling and with what scope, for authorize() and revalidate() to check. Per call:
    * not stored, not part of the intent's fingerprint.
@@ -313,4 +368,6 @@ export interface EffectResult<Observation> {
   attempts: AttemptRecord[];
   /** Earliest time a RETRY may proceed (see ResolvedAttempt.retryNotBefore); null otherwise. */
   retryNotBefore: string | null;
+  /** The latest review decision on this operation (OperationRecord.review), or null. */
+  review: RecordedReview | null;
 }

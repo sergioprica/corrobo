@@ -38,6 +38,9 @@ With `PostgresStore` and an `observe()` that tells the truth, corrobo will not i
 **Can corrobo check that an action is still allowed right before it runs?**
 Yes: a contract's `revalidate()` runs under the lock before every attempt, with the current caller's `context`, and can let it proceed, send it to review, or reject it. It only gates new attempts; it never stops corrobo from recognizing an effect that already landed. It narrows the gap between checking and acting but can't close it, so use the provider's conditional writes too where it has them. → rows 7.5–7.13
 
+**Who approved this, and can an approval be reused for something else?**
+A `ReviewDecision` records the reviewer, when they decided, an optional expiry and note, and the fingerprint of the intent it applies to, on the operation and on every attempt it allowed. A decision made for a different intent than the recorded one is refused, an approval that has expired sends the operation back to review before any further attempt, and `revalidate()` can apply your approver policy. corrobo doesn't authenticate the reviewer: only pass decisions from your own review flow, never from anything a model can call. → rows 7.14–7.22
+
 **What does it explicitly not guarantee?**
 Exactly-once execution in general. Anything about writes made outside corrobo. A correct `observe()`: if your lookup can't prove absence (a search, an eventually consistent read) and your contract calls that `NOT_APPLIED`, corrobo will believe it (row 3.4). A correct `maxInFlightMs`: it's your bound, corrobo can't verify it. It is also not a scheduler: it doesn't decide when you call it again.
 

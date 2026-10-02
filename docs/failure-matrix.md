@@ -86,6 +86,15 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 7.11 | Approved after earlier attempts (revalidation sent attempt 2 to review) | The latest attempt is re-observed before executing, whether its transport failed or got a response; an effect found then is `COMPLETE`. Rejected instead: `CLOSED` with `POLICY_REVIEW_REJECTED`, attempt 1's evidence kept | Only if approved and still a settled `NOT_APPLIED` | T125, T130, T131, T132 |
 | 7.12 | Restart finds a reserved, unresolved attempt | Observes only; `revalidate()` isn't called because nothing executes | No | T126 |
 | 7.13 | Another pass writes while `revalidate()` runs (lost lock) | The reservation is version-checked and fails; nothing executes | No | T127 |
+| 7.14 | Approved with a `ReviewDecision` | Recorded on the operation with reviewer, times and the recorded intent's fingerprint, and copied onto the attempt it allowed; survives a restart | Once | T134, T140 |
+| 7.15 | Rejected with a `ReviewDecision` | `CLOSED`, `POLICY_REVIEW_REJECTED` naming the reviewer; a later decision can't replace it | Never | T135, T141 |
+| 7.16 | The reviewer was shown a different intent (`intentFingerprint` doesn't match) | Refused (throws); nothing recorded | Not on that approval | T136 |
+| 7.17 | Malformed `reviewDecision` (no reviewer, bad dates, `expiresAt` on a rejection…) | `TypeError` before anything is recorded | No | T137 |
+| 7.18 | Approval already expired when it arrives | Refused (throws); nothing recorded | No | T138 |
+| 7.19 | Approval expires before a later attempt | `AWAITING_REVIEW` with `APPROVAL_EXPIRED`; `revalidate()` never sees it; a new approval allows the attempt | Not until re-approved | T139, T144 |
+| 7.20 | Approval no longer matches the recorded intent under the contract's current fingerprint rules | `AWAITING_REVIEW` with `APPROVAL_INTENT_MISMATCH` | Not until re-approved | T142 |
+| 7.21 | Approver policy (e.g. no self-approval) | Up to `revalidate()`, which receives the approval and this call's `context` | Only when it says `proceed` | T143 |
+| 7.22 | `"approved"` / `"rejected"` strings (deprecated) | Still work; recorded with `reviewer: null` | As before | T145, T48 |
 
 ## 8. Concurrency and lock loss
 
@@ -132,7 +141,7 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 10.7 | Nested evidence, observations, reason metadata | Round-trip through Postgres exactly | T84, T85 |
 | 10.8 | Retention | No automatic expiry or deletion; retention is yours | T86 |
 | 10.9 | Upgrading from 0.2.x | `migrate()` adds `version` in place; old reserved rows recover; old transport-failure `RETRY`s are re-checked under current rules | T89, T90, T91 |
-| 10.10 | Upgrading from 0.3.x | `migrate()` adds `blocked_by` in place; existing rows keep their state and version | T129 |
+| 10.10 | Upgrading from 0.3.x | `migrate()` adds `blocked_by` and `review` in place; existing rows keep their state and version, and a 0.3.x rejection still reads as rejected | T129, T146 |
 
 Error **messages** are still persisted: if your code puts secrets into an error message, intent, observation or reason metadata, they are stored as you wrote them.
 
@@ -295,3 +304,16 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 - **T131** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "requiresReview after a definitive not-applied response, then approved: re-observed first, so an effect that appeared meanwhile isn't repeated"
 - **T132** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "requiresReview after a definitive not-applied response, then approved and still not applied: one new attempt"
 - **T133** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "a result whose fields throw when read fails closed like a throw, and only code, summary and metadata of a reason are kept"
+- **T134** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval is recorded with who, when and the intent it applies to, and the attempt it allowed carries it"
+- **T135** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a rejection records who rejected it, says so in the result, and nothing is executed"
+- **T136** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval made for a different intent than the recorded one is refused, and nothing changes"
+- **T137** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a malformed reviewDecision (%s) throws before anything is recorded or executed"
+- **T138** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval that has already expired when it arrives is refused, and nothing changes"
+- **T139** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval that expires before a later attempt sends it back to review instead of executing"
+- **T140** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "an approval survives a restart: the review, and the approval on the attempt it allowed, read back exactly"
+- **T141** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "a rejection is recorded with the reviewer and reported from a fresh read"
+- **T142** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval whose intent no longer matches the recorded one (the fingerprint rules changed) goes back to review"
+- **T143** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "revalidate() receives the approval and can enforce approver policy (no self-approval)"
+- **T144** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a crash after the approval is recorded but before the attempt: the next call checks the approval again"
+- **T145** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "the deprecated string form still works, and is recorded with reviewer null"
+- **T146** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "migrate() adds the review column to an older table and keeps its rows"

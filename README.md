@@ -89,7 +89,7 @@ Two answers, kept separate on purpose: what the evidence shows, and what's safe 
 | `PENDING` | Accepted, not final yet | none yet: call again later; while it stays `PENDING`, corrobo re-checks instead of re-executing |
 | `UNKNOWN` | It couldn't find out | `INVESTIGATE`, never a blind retry |
 
-Plus `REVIEW`: an optional `authorize()` hook can require human sign-off *before* anything is executed; a reviewer can approve or reject.
+Plus `REVIEW`: an optional `authorize()` hook can require human sign-off *before* anything is executed; a reviewer can approve or reject. A decision records who made it and when, can carry an expiry, and is bound to the exact intent that was reviewed. corrobo checks it again before every attempt it allows (`reviewDecision: { decision: "approved", reviewer, expiresAt }`; [spec §M](docs/v0.1-spec.md#m-review-decisions)). Pass it only from your own review flow, never from anything a model can call.
 
 **Checking again before each attempt.** An approval given now, or a retry an hour from now, can act on a world that has changed: the order was cancelled, the agent's scope was revoked. An optional `revalidate()` hook runs right before every attempt, including the first, with the current caller's `context`, and can let it `proceed`, send it to `requiresReview`, or `reject` it (`REPLAN`). It never blocks corrobo from finding out what an earlier attempt did, and if it throws, nothing runs. It narrows the gap between checking and acting but can't close it, so use the provider's conditional writes too where it has them. Details: [spec §M.1](docs/v0.1-spec.md#m1-revalidation-before-each-attempt).
 
@@ -148,7 +148,7 @@ corrobo is not a workflow engine, queue, scheduler, or agent framework. It doesn
 corrobo has no telemetry and no hosted service, and sends no application data to its maintainer. Your effects go to the systems your code already calls; `PostgresStore` writes only to the database you give it (local or remote — your choice).
 
 - **`InMemoryStore`** stays inside the process: no persistence, no network I/O of its own.
-- **`PostgresStore`** persists what your contracts produce: intent, transport evidence, observations, reason metadata and error *messages*, with no automatic expiry. Retention and deletion are yours.
+- **`PostgresStore`** persists what your contracts produce: intent, transport evidence, observations, reason metadata and error *messages*, plus review decisions (reviewer, note), with no automatic expiry. Retention and deletion are yours. `context` is never persisted.
 - **Raw thrown error objects are never persisted** by `PostgresStore` (they often carry request headers and response bodies). Only the message string is kept, so don't put secrets in error messages.
 - corrobo doesn't inspect or filter the data you put in these fields; what goes in is up to you.
 

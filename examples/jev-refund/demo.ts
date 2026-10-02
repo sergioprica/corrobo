@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   });
   console.log(`proof the effect was NOT executed while awaiting review: createdRefundCount === ${ledger.createdRefundCount} (expect 1, unchanged from A)`);
 
-  const resultB2 = await runEffect(store, contract, { identity: identityB, intent: intentB, reviewDecision: "approved" });
+  const resultB2 = await runEffect(store, contract, { identity: identityB, intent: intentB, reviewDecision: { decision: "approved", reviewer: "ops@example.com" } });
   log("B (continued). after human approval -> executes, APPLIED / COMPLETE", {
     evidenceState: resultB2.evidenceState,
     disposition: resultB2.disposition,

@@ -16,6 +16,8 @@ import type {
   OperationStatus,
   PreExecuteCheck,
   ReasonCode,
+  RecordedReview,
+  ReviewDecision,
   ReservedAttempt,
   ResolvedAttempt,
   TransportOutcome
@@ -75,7 +77,8 @@ function resultForInProgress<Observation>(identity: OperationRecord["identity"])
     },
     observation: null,
     attempts: [],
-    retryNotBefore: null
+    retryNotBefore: null,
+    review: null
   };
 }
 
@@ -105,14 +108,53 @@ function prepareIntent<Intent>(contract: EffectContract<Intent, unknown, unknown
 }
 
 /** An EffectRequest after identity shorthand is resolved (see runEffect). */
-type ResolvedRequest<Intent, Context = unknown> = Omit<EffectRequest<Intent, Context>, "identity"> & {
+type ResolvedRequest<Intent, Context = unknown> = Omit<EffectRequest<Intent, Context>, "identity" | "reviewDecision"> & {
   identity: OperationIdentity;
+  /** reviewDecision, validated; the deprecated string form has reviewer null. */
+  review?: Omit<ReviewDecision, "reviewer"> & { reviewer: string | null };
 };
+
+function isIsoTime(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
+/** Validates a reviewDecision before anything runs: a malformed approval must never count as one. */
+function normalizeReviewDecision(input: EffectRequest<unknown>["reviewDecision"]): ResolvedRequest<unknown>["review"] {
+  if (input === undefined) return undefined;
+  if (input === "approved" || input === "rejected") return { decision: input, reviewer: null };
+  const fail = (problem: string): never => {
+    throw new TypeError(`corrobo: reviewDecision ${problem}; nothing was recorded or executed.`);
+  };
+  if (typeof input !== "object" || input === null) fail(`must be a ReviewDecision object (or "approved" / "rejected")`);
+  const d = input as ReviewDecision;
+  if (d.decision !== "approved" && d.decision !== "rejected") fail(`.decision must be "approved" or "rejected"`);
+  if (typeof d.reviewer !== "string" || d.reviewer.trim() === "") fail(`.reviewer must be a non-empty string`);
+  if (d.decidedAt !== undefined && !isIsoTime(d.decidedAt)) fail(`.decidedAt must be an ISO date string`);
+  if (d.expiresAt !== undefined) {
+    if (d.decision !== "approved") fail(`.expiresAt applies only to approvals`);
+    if (!isIsoTime(d.expiresAt)) fail(`.expiresAt must be an ISO date string`);
+    if (d.decidedAt !== undefined && Date.parse(d.expiresAt) <= Date.parse(d.decidedAt)) {
+      fail(`.expiresAt must be after .decidedAt`);
+    }
+  }
+  if (d.intentFingerprint !== undefined && typeof d.intentFingerprint !== "string") fail(`.intentFingerprint must be a string`);
+  if (d.note !== undefined && typeof d.note !== "string") fail(`.note must be a string`);
+  const review: NonNullable<ResolvedRequest<unknown>["review"]> = { decision: d.decision, reviewer: d.reviewer };
+  if (d.decidedAt !== undefined) review.decidedAt = d.decidedAt;
+  if (d.expiresAt !== undefined) review.expiresAt = d.expiresAt;
+  if (d.intentFingerprint !== undefined) review.intentFingerprint = d.intentFingerprint;
+  if (d.note !== undefined) review.note = d.note;
+  return review;
+}
 
 function resolveRequest<Intent, Context>(
   contract: EffectContract<Intent, unknown, unknown, Context>,
-  request: EffectRequest<Intent, Context>
+  input: EffectRequest<Intent, Context>
 ): ResolvedRequest<Intent, Context> {
+  const { reviewDecision, ...rest } = input;
+  const review = normalizeReviewDecision(reviewDecision);
+  const request: Omit<ResolvedRequest<Intent, Context>, "identity"> & { identity: OperationIdentity | string } =
+    review ? { ...rest, review } : rest;
   if (typeof request.identity === "string") {
     return { ...request, identity: { id: request.identity, operationType: contract.operationType } };
   }
@@ -208,7 +250,15 @@ function resultBeforeAttempt<Observation>(
     dispositionReason,
     observation: observation as ObservationResult<Observation> | null,
     attempts: record.attempts,
-    retryNotBefore: null
+    retryNotBefore: null,
+    review: record.review ?? null
+  };
+}
+
+function rejectedInReview(review: RecordedReview | undefined): ReasonCode {
+  return {
+    code: "POLICY_REVIEW_REJECTED",
+    summary: `This operation was reviewed and rejected${review?.reviewer ? ` by ${review.reviewer}` : ""}; nothing more will be attempted.`
   };
 }
 
@@ -222,6 +272,9 @@ function resultFromRecord<Observation>(record: OperationRecord): EffectResult<Ob
   if (record.status === "AWAITING_REVIEW") {
     return resultBeforeAttempt(record, "REVIEW", record.reviewReason ?? defaultReviewReason());
   }
+  if (record.status === "CLOSED" && record.review?.decision === "rejected") {
+    return resultBeforeAttempt(record, "REVIEW", rejectedInReview(record.review));
+  }
 
   const blocked = currentBlock(record);
   if (blocked?.outcome === "reject") {
@@ -234,14 +287,12 @@ function resultFromRecord<Observation>(record: OperationRecord): EffectResult<Ob
   const latest = record.attempts[record.attempts.length - 1];
 
   // CLOSED, yet the latest attempt didn't close it (there is none, or it asked for a retry):
-  // the only remaining way to close an operation is a review rejection before the next attempt.
+  // the only remaining way to close an operation is a review rejection before the next attempt
+  // (this covers rejections recorded by corrobo 0.3.x, which kept no review record).
   const latestLeftItOpen =
     latest?.status === "RESOLVED" && statusAfter(latest.evidenceState, latest.disposition) === "OPEN";
   if (record.status === "CLOSED" && (!latest || latestLeftItOpen)) {
-    return resultBeforeAttempt(record, "REVIEW", {
-      code: "POLICY_REVIEW_REJECTED",
-      summary: "This operation was reviewed and rejected; nothing more will be attempted."
-    });
+    return resultBeforeAttempt(record, "REVIEW", rejectedInReview(record.review));
   }
 
   if (!latest) {
@@ -266,7 +317,8 @@ function resultFromRecord<Observation>(record: OperationRecord): EffectResult<Ob
       },
       observation: null,
       attempts: record.attempts,
-      retryNotBefore: null
+      retryNotBefore: null,
+      review: record.review ?? null
     };
   }
 
@@ -280,7 +332,8 @@ function resultFromRecord<Observation>(record: OperationRecord): EffectResult<Ob
     dispositionReason: latest.dispositionReason,
     observation: latestObservation as ObservationResult<Observation> | null,
     attempts: record.attempts,
-    retryNotBefore: latest.retryNotBefore ?? null
+    retryNotBefore: latest.retryNotBefore ?? null,
+    review: record.review ?? null
   };
 }
 
@@ -392,6 +445,39 @@ async function performAttempt<Intent, Observation, Evidence>(
   return resultFromRecord(updated);
 }
 
+function approvedReason(approval: RecordedReview): ReasonCode {
+  return {
+    code: "REVIEW_APPROVED",
+    summary: `Approved in review${approval.reviewer ? ` by ${approval.reviewer}` : ""}.`
+  };
+}
+
+/**
+ * corrobo's own checks of a recorded approval before each attempt: it must still apply to the
+ * recorded intent, and must not have expired. Either problem sends the operation back to review.
+ */
+function checkApproval(
+  contract: EffectContract<any, unknown, unknown, any>,
+  record: OperationRecord,
+  approval: RecordedReview,
+  now: string
+): ReasonCode | null {
+  if (fingerprintIntent(contract, record.intent) !== approval.intentFingerprint) {
+    return {
+      code: "APPROVAL_INTENT_MISMATCH",
+      summary: "The recorded approval was given for a different intent than the one recorded for this operation. It needs a new review."
+    };
+  }
+  if (approval.expiresAt !== undefined && Date.parse(now) >= Date.parse(approval.expiresAt)) {
+    return {
+      code: "APPROVAL_EXPIRED",
+      summary: `The approval expired at ${approval.expiresAt}, before this attempt. Nothing was executed; it needs a new review.`,
+      metadata: { expiresAt: approval.expiresAt }
+    };
+  }
+  return null;
+}
+
 /** What performAttempt needs from the record, read before revalidate() sees the record. */
 interface AttemptBase {
   identity: OperationIdentity;
@@ -439,7 +525,8 @@ async function runRevalidate<Intent, Context>(
   contract: EffectContract<Intent, unknown, unknown, Context>,
   record: OperationRecord,
   request: ResolvedRequest<Intent, Context>,
-  attemptNumber: number
+  attemptNumber: number,
+  approval: RecordedReview | null
 ): Promise<Pick<PreExecuteCheck, "outcome" | "reason">> {
   let decision: unknown;
   let reason: unknown;
@@ -448,6 +535,7 @@ async function runRevalidate<Intent, Context>(
       intent: request.intent,
       identity: { ...record.identity },
       attemptNumber,
+      approval: approval ? { ...approval } : null,
       record,
       context: request.context
     });
@@ -489,28 +577,30 @@ async function checkThenAttempt<Intent, Observation, Evidence, Context>(
     version: record.version,
     attemptNumber: record.attempts.length + 1
   };
-  if (!contract.revalidate) {
+  const approval = record.review?.decision === "approved" ? { ...record.review } : null;
+  if (!contract.revalidate && !approval) {
     return performAttempt(store, contract, base, request.intent);
   }
 
-  const result = await runRevalidate(contract, record, request, base.attemptNumber);
+  // corrobo's own checks of the approval come first; revalidate() only sees a valid one.
+  const approvalProblem = approval ? checkApproval(contract, record, approval, await safetyNow(store)) : null;
+  const result: Pick<PreExecuteCheck, "outcome" | "reason"> = approvalProblem
+    ? { outcome: "requiresReview", reason: approvalProblem }
+    : contract.revalidate
+      ? await runRevalidate(contract, record, request, base.attemptNumber, approval)
+      : { outcome: "proceed", reason: approvedReason(approval!) };
   const checkedAt = await safetyNow(store);
+  const checked = {
+    reason: result.reason,
+    ...(approval ? { approval } : {}),
+    attemptNumber: base.attemptNumber,
+    checkedAt
+  };
   if (result.outcome === "proceed") {
-    return performAttempt(store, contract, base, request.intent, {
-      outcome: "proceed",
-      reason: result.reason,
-      attemptNumber: base.attemptNumber,
-      checkedAt
-    });
+    return performAttempt(store, contract, base, request.intent, { outcome: "proceed", ...checked });
   }
 
-  const blockedBy: BlockingCheck = {
-    outcome: result.outcome,
-    reason: result.reason,
-    attemptNumber: base.attemptNumber,
-    checkedAt,
-    recordVersion: base.version + 1
-  };
+  const blockedBy: BlockingCheck = { outcome: result.outcome, ...checked, recordVersion: base.version + 1 };
   const status: OperationStatus | undefined =
     result.outcome === "requiresReview" ? "AWAITING_REVIEW" : result.outcome === "reject" ? "CLOSED" : undefined;
   const updated = await store.updateOperation(
@@ -691,22 +781,60 @@ async function runCoordinated<Intent, Observation, Evidence, Context>(
   }
 
   if (existing.status === "AWAITING_REVIEW") {
-    if (request.reviewDecision === "rejected") {
-      const closed = await store.updateOperation(existing.identity.id, { status: "CLOSED" }, existing.version);
-      return resultFromRecord(closed);
-    }
-    if (request.reviewDecision !== "approved") {
+    if (!request.review) {
       return resultFromRecord(existing);
+    }
+    const review = await recordReview(store, contract, existing, request.review);
+    if (review.decision === "rejected") {
+      const closed = await store.updateOperation(existing.identity.id, { status: "CLOSED", review }, existing.version);
+      return resultFromRecord(closed);
     }
     // Approved: continue as an OPEN operation would. With no attempt yet that is the first
     // attempt. After earlier attempts (revalidate() asked for review before attempt N), time has
     // passed while it waited, so the latest attempt is re-observed before anything executes
     // again, even if its NOT_APPLIED was final when it was recorded.
-    const reopened = await store.updateOperation(existing.identity.id, { status: "OPEN" }, existing.version);
+    const reopened = await store.updateOperation(existing.identity.id, { status: "OPEN", review }, existing.version);
     return await continueOpen(store, contract, reopened, request, { reobserveFirst: true });
   }
 
   return await continueOpen(store, contract, existing, request);
+}
+
+/**
+ * Binds a review decision to the recorded intent. Throws, changing nothing, if the reviewer was
+ * shown a different intent (intentFingerprint) or the approval has already expired.
+ */
+async function recordReview(
+  store: CoordinatedStore,
+  contract: EffectContract<any, unknown, unknown, any>,
+  record: OperationRecord,
+  decision: NonNullable<ResolvedRequest<unknown>["review"]>
+): Promise<RecordedReview> {
+  const intentFingerprint = fingerprintIntent(contract, record.intent);
+  if (decision.intentFingerprint !== undefined && decision.intentFingerprint !== intentFingerprint) {
+    throw new Error(
+      `corrobo: this review decision for operation "${record.identity.id}" was made for a different intent than ` +
+        `the one recorded (intentFingerprint doesn't match); nothing was recorded or executed. Show the reviewer the ` +
+        `recorded intent and use fingerprintIntent(contract, intent) on that.`
+    );
+  }
+  const now = await safetyNow(store);
+  if (decision.expiresAt !== undefined && Date.parse(decision.expiresAt) <= Date.parse(now)) {
+    throw new Error(
+      `corrobo: this approval for operation "${record.identity.id}" expired at ${decision.expiresAt}, before it was ` +
+        `recorded; nothing was recorded or executed.`
+    );
+  }
+  const review: RecordedReview = {
+    decision: decision.decision,
+    reviewer: decision.reviewer,
+    decidedAt: decision.decidedAt ?? now,
+    intentFingerprint,
+    recordedAt: now
+  };
+  if (decision.expiresAt !== undefined) review.expiresAt = decision.expiresAt;
+  if (decision.note !== undefined) review.note = decision.note;
+  return review;
 }
 
 async function continueOpen<Intent, Observation, Evidence, Context>(

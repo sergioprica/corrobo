@@ -4,14 +4,17 @@
 
 ### Upgrading from 0.3.x
 
-1. **Run `PostgresStore.migrate(pool)` once.** It adds a nullable `blocked_by` column in place. Drain 0.3.x workers first: they don't know about the new fields.
-2. **Custom `EffectStore` implementations** must add `updateOperation(id, update, expectedVersion)`. It's version-checked like every write, and must apply only the fields present, with `null` clearing a field. They must also persist `OperationRecord.blockedBy` and the optional `check` on reserved attempts (`ReservedAttemptInput.check`). `setStatus()` is deprecated: runEffect() no longer calls it, and it will be removed in 0.5.
+1. **Run `PostgresStore.migrate(pool)` once.** It adds nullable `blocked_by` and `review` columns in place. Drain 0.3.x workers first: they don't know about the new fields.
+2. **Custom `EffectStore` implementations** must add `updateOperation(id, update, expectedVersion)`. It's version-checked like every write, and must apply only the fields present, with `null` clearing a field. They must also persist `OperationRecord.blockedBy`, `OperationRecord.review` and the optional `check` on reserved attempts (`ReservedAttemptInput.check`). `setStatus()` is deprecated: runEffect() no longer calls it, and it will be removed in 0.5.
+3. **`EffectResult.review`** is a new required field (`RecordedReview | null`). Code that builds results by hand, such as test fixtures, needs `review: null`.
+4. **Prefer `reviewDecision: { decision, reviewer, ... }`** over the strings `"approved"` / `"rejected"`. The strings still work, are recorded with `reviewer: null`, and are deprecated.
 
 ### Added
 
 - **`revalidate()` on contracts** ([#27](https://github.com/vidithsalla/corrobo/issues/27)) runs under the lock right before every attempt, including the first, and before the attempt is reserved. It can `proceed`, require review, or `reject` (`CLOSED`/`REPLAN`). If it throws, nothing executes and the operation stays `OPEN` (`REVALIDATION_FAILED`). It only gates new attempts: a late landing is still found and completed. Its result is recorded on the attempt (`check`), or on the operation when it stops one (`blockedBy`). See [spec §M.1](docs/v0.1-spec.md#m1-revalidation-before-each-attempt).
 - **`EffectRequest.context`** is per-call caller information (actor, scope) passed to `authorize()` and `revalidate()`. It's never stored or fingerprinted. `defineContract<Intent, Context>()` types it.
 - `authorize()` now also receives `{ identity, context }`.
+- **Attributed review decisions** ([#28](https://github.com/vidithsalla/corrobo/issues/28)). `reviewDecision` takes `{ decision, reviewer, decidedAt?, expiresAt?, intentFingerprint?, note? }`, validated before anything runs. It's recorded on the operation (`OperationRecord.review`, `EffectResult.review`) with the recorded intent's fingerprint, and copied onto each attempt it allowed. A decision made for a different intent is refused. An expired approval, or one that no longer matches the recorded intent, sends the operation back to review before any further attempt. `revalidate()` receives the approval so it can check approver policy. See [spec §M](docs/v0.1-spec.md#m-review-decisions).
 
 - Docs: [where the identity comes from](README.md#where-the-identity-comes-from). Mint it server-side when the action is confirmed and store it with the action, because the same intent with a new identity is a new effect.
 - Example: [`examples/action-table`](examples/action-table) links corrobo's record to an app's own table of actions (`npm run example:action-table`). It's tested against Postgres, including the restart sweep and an operator join.
