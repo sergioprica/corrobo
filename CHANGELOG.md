@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-10-01
+
+Pre-execute checks for agent runtimes: `revalidate()` before every attempt, and review decisions that record who approved what, bound to the intent and checked before each attempt. Both were designed in review by Ömer Faruk Koç.
 
 ### Upgrading from 0.3.x
 
@@ -15,6 +17,7 @@
 - **`revalidate()` on contracts** ([#27](https://github.com/vidithsalla/corrobo/issues/27)) runs under the lock right before every attempt, including the first, and before the attempt is reserved. It can `proceed`, require review, or `reject` (`CLOSED`/`REPLAN`). If it throws, nothing executes and the operation stays `OPEN` (`REVALIDATION_FAILED`). It only gates new attempts: a late landing is still found and completed. Its result is recorded on the attempt (`check`), or on the operation when it stops one (`blockedBy`). See [spec §M.1](docs/v0.1-spec.md#m1-revalidation-before-each-attempt).
 - **`EffectRequest.context`** is per-call caller information (actor, scope) passed to `authorize()` and `revalidate()`. It's never stored or fingerprinted. `defineContract<Intent, Context>()` types it.
 - `authorize()` now also receives `{ identity, context }`.
+- `corrobo/package.json` is exported, so `require("corrobo/package.json")` works.
 - **Attributed review decisions** ([#28](https://github.com/vidithsalla/corrobo/issues/28)). `reviewDecision` takes `{ decision, reviewer, decidedAt?, expiresAt?, intentFingerprint?, note? }`, validated before anything runs (times must be strict RFC 3339 with `Z` or an offset). It's recorded on the operation (`OperationRecord.review`, `EffectResult.review`) with the recorded intent's fingerprint, and copied onto each attempt it allowed. A decision made for a different intent is refused. An expired approval, or one that no longer matches the recorded intent, sends the operation back to review before any further attempt. `revalidate()` receives the approval so it can check approver policy. See [spec §M](docs/v0.1-spec.md#m-review-decisions).
 
 - Docs: [where the identity comes from](README.md#where-the-identity-comes-from). Mint it server-side when the action is confirmed and store it with the action, because the same intent with a new identity is a new effect.
