@@ -80,10 +80,10 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 7.5 | `revalidate()` runs before an attempt | Before every attempt, including the first, and before the attempt is reserved, with this call's `context`; a `proceed` is recorded on the attempt | Only on `proceed` | T116, T124 |
 | 7.6 | `revalidate()` says `reject` | `CLOSED`, `REPLAN` (new decision, new identity); the check is recorded on the operation; nothing reserved | Never | T117, T128 |
 | 7.7 | `revalidate()` says `requiresReview` | `AWAITING_REVIEW`, `REVIEW`; after approval it runs again before anything executes, and can send it back to review | Not until approved *and* revalidated | T118, T119 |
-| 7.8 | `revalidate()` throws, or returns something that isn't a valid result | `REVALIDATION_FAILED`, operation stays `OPEN`, nothing reserved; a later call checks again | Not until a check passes | T120, T121 |
+| 7.8 | `revalidate()` throws, or returns something that isn't a valid result (including one whose fields throw when read) | `REVALIDATION_FAILED`, operation stays `OPEN`, nothing reserved; a later call checks again | Not until a check passes | T120, T121, T133 |
 | 7.9 | Things changed between attempt 1 and attempt 2 (scope revoked, order cancelled) | Attempt 2 is stopped; attempt 1's evidence is still reported | No | T122 |
 | 7.10 | A late landing while `revalidate()` would now say no | The settlement re-check finds `APPLIED` → `COMPLETE`; `revalidate()` is never asked (it gates new effects, not finding out what happened) | No | T123 |
-| 7.11 | Approved after earlier attempts (revalidation sent attempt 2 to review) | The settlement re-check runs again before executing; a landing found then is `COMPLETE`. Rejected instead: `CLOSED` with `POLICY_REVIEW_REJECTED`, attempt 1's evidence kept | Only if approved and still a settled `NOT_APPLIED` | T125, T130 |
+| 7.11 | Approved after earlier attempts (revalidation sent attempt 2 to review) | The latest attempt is re-observed before executing, whether its transport failed or got a response; an effect found then is `COMPLETE`. Rejected instead: `CLOSED` with `POLICY_REVIEW_REJECTED`, attempt 1's evidence kept | Only if approved and still a settled `NOT_APPLIED` | T125, T130, T131, T132 |
 | 7.12 | Restart finds a reserved, unresolved attempt | Observes only; `revalidate()` isn't called because nothing executes | No | T126 |
 | 7.13 | Another pass writes while `revalidate()` runs (lost lock) | The reservation is version-checked and fails; nothing executes | No | T127 |
 
@@ -292,3 +292,6 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 - **T128** [`tests/postgres-revalidate.test.ts`](../tests/postgres-revalidate.test.ts) — "a reject is persisted on the operation and reported from a fresh read"
 - **T129** [`tests/postgres-revalidate.test.ts`](../tests/postgres-revalidate.test.ts) — "migrate() upgrades a 0.3.x table in place (adds blocked_by) and keeps its rows"
 - **T130** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "requiresReview before attempt 2, then rejected in review: CLOSED as rejected, not as a pending RETRY"
+- **T131** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "requiresReview after a definitive not-applied response, then approved: re-observed first, so an effect that appeared meanwhile isn't repeated"
+- **T132** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "requiresReview after a definitive not-applied response, then approved and still not applied: one new attempt"
+- **T133** [`tests/revalidate.test.ts`](../tests/revalidate.test.ts) — "a result whose fields throw when read fails closed like a throw, and only code, summary and metadata of a reason are kept"

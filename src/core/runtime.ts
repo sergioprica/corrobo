@@ -441,23 +441,30 @@ async function runRevalidate<Intent, Context>(
   request: ResolvedRequest<Intent, Context>,
   attemptNumber: number
 ): Promise<Pick<PreExecuteCheck, "outcome" | "reason">> {
-  let result: unknown;
+  let decision: unknown;
+  let reason: unknown;
   try {
-    result = await contract.revalidate!({
+    const result: unknown = await contract.revalidate!({
       intent: request.intent,
       identity: { ...record.identity },
       attemptNumber,
       record,
       context: request.context
     });
+    // Read each field once, inside the try: a throwing getter fails closed like a throw.
+    if (typeof result === "object" && result !== null) {
+      ({ decision, reason } = result as { decision?: unknown; reason?: unknown });
+      if (typeof reason === "object" && reason !== null) {
+        const { code, summary, metadata } = reason as ReasonCode;
+        reason = metadata === undefined ? { code, summary } : { code, summary, metadata };
+      }
+    }
   } catch (err) {
     return revalidationFailed(`revalidate() threw: ${errorMessage(err)}.`);
   }
-  const decision = (result as { decision?: unknown } | null)?.decision;
   if (decision !== "proceed" && decision !== "requiresReview" && decision !== "reject") {
     return revalidationFailed(`revalidate() returned no valid decision (expected "proceed", "requiresReview" or "reject").`);
   }
-  const reason = (result as { reason?: unknown }).reason;
   if (reason !== undefined && !isReasonCode(reason)) {
     return revalidationFailed(`revalidate() returned a reason without a string code and summary.`);
   }
@@ -691,11 +698,12 @@ async function runCoordinated<Intent, Observation, Evidence, Context>(
     if (request.reviewDecision !== "approved") {
       return resultFromRecord(existing);
     }
-    // Approved: continue exactly as an OPEN operation would. With no attempt yet that is the
-    // first attempt; after earlier attempts (revalidate() asked for review before attempt N)
-    // the settlement rules below still apply before anything is executed again.
+    // Approved: continue as an OPEN operation would. With no attempt yet that is the first
+    // attempt. After earlier attempts (revalidate() asked for review before attempt N), time has
+    // passed while it waited, so the latest attempt is re-observed before anything executes
+    // again, even if its NOT_APPLIED was final when it was recorded.
     const reopened = await store.updateOperation(existing.identity.id, { status: "OPEN" }, existing.version);
-    return await continueOpen(store, contract, reopened, request);
+    return await continueOpen(store, contract, reopened, request, { reobserveFirst: true });
   }
 
   return await continueOpen(store, contract, existing, request);
@@ -705,7 +713,8 @@ async function continueOpen<Intent, Observation, Evidence, Context>(
   store: CoordinatedStore,
   contract: EffectContract<Intent, Observation, Evidence, Context>,
   existing: OperationRecord,
-  request: ResolvedRequest<Intent, Context>
+  request: ResolvedRequest<Intent, Context>,
+  options: { reobserveFirst?: boolean } = {}
 ): Promise<EffectResult<Observation>> {
   const latest = existing.attempts[existing.attempts.length - 1];
   if (!latest) {
@@ -721,7 +730,7 @@ async function continueOpen<Intent, Observation, Evidence, Context>(
   }
 
   if (latest.disposition === "RETRY") {
-    if (latest.transport.ok) {
+    if (latest.transport.ok && !options.reobserveFirst) {
       // execute() returned a response: that request is finished, the NOT_APPLIED was final.
       return await checkThenAttempt(store, contract, existing, request);
     }
@@ -729,8 +738,8 @@ async function continueOpen<Intent, Observation, Evidence, Context>(
     if (latest.retryNotBefore && Date.parse(await safetyNow(store)) < Date.parse(latest.retryNotBefore)) {
       return resultFromRecord(existing);
     }
-    // Settlement check: observe again and re-decide under the current rules before any new
-    // attempt. A late landing shows up here as APPLIED (→ COMPLETE, no new attempt). This also
+    // Settlement check (and the re-check after a review wait): observe again and re-decide
+    // under the current rules before any new attempt. A late landing shows up here as APPLIED (→ COMPLETE, no new attempt). This also
     // covers RETRYs recorded without a settlement window (e.g. by corrobo 0.2.x): with no
     // maxInFlightMs they now become INVESTIGATE instead of executing.
     const settled = await reObserve(store, contract, existing, request.intent, latest);

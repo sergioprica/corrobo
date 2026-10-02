@@ -300,6 +300,27 @@ describe("revalidate(): failing closed", () => {
     expect(ledger.credits).toEqual([]);
   });
 
+  it("a result whose fields throw when read fails closed like a throw, and only code, summary and metadata of a reason are kept", async () => {
+    const hostile = makeContract(makeLedger(), () => ({
+      get decision(): "proceed" {
+        throw new Error("getter blew up");
+      }
+    }));
+    const store0 = new ClockStore();
+    const failed = await runEffect(store0, hostile, { identity: "f2h", intent });
+    expect(failed).toMatchObject({ status: "OPEN", dispositionReason: { code: "REVALIDATION_FAILED" } });
+    expect(failed.dispositionReason.summary).toContain("getter blew up");
+    expect((await store0.getOperation("f2h"))?.blockedBy?.outcome).toBe("failed");
+
+    const extra = makeContract(makeLedger(), () => ({
+      decision: "reject",
+      reason: { code: "NO", summary: "no", metadata: { k: 1 }, secret: "should not be stored" } as never
+    }));
+    const store = new ClockStore();
+    await runEffect(store, extra, { identity: "f2x", intent });
+    expect((await store.getOperation("f2x"))?.blockedBy?.reason).toEqual({ code: "NO", summary: "no", metadata: { k: 1 } });
+  });
+
   it("changing the record it was given changes nothing", async () => {
     const store = new ClockStore();
     const ledger = makeLedger();
@@ -470,6 +491,52 @@ describe("revalidate(): before later attempts", () => {
     const again = await runEffect(store, contract, { identity: "r5r", intent });
     expect(again.dispositionReason.code).toBe("POLICY_REVIEW_REJECTED");
     expect(ledger.credits).toEqual([]);
+  });
+
+  it("requiresReview after a definitive not-applied response, then approved: re-observed first, so an effect that appeared meanwhile isn't repeated", async () => {
+    const store = new ClockStore();
+    const ledger = makeLedger();
+    const log: string[] = [];
+    let reviewed = false;
+    const contract = makeContract(
+      ledger,
+      ({ attemptNumber }) => (attemptNumber === 1 || reviewed ? { decision: "proceed" } : { decision: "requiresReview" }),
+      log
+    );
+
+    ledger.next = "rejectNext"; // a response: not applied, RETRY with no settlement window
+    await runEffect(store, contract, { identity: "r5ok", intent });
+    const waiting = await runEffect(store, contract, { identity: "r5ok", intent });
+    expect(waiting.status).toBe("AWAITING_REVIEW");
+
+    ledger.credits.push("r5ok"); // the effect appears while the operation waits for review
+    reviewed = true;
+    log.length = 0;
+    const approved = await runEffect(store, contract, { identity: "r5ok", intent, reviewDecision: "approved" });
+    expect(approved).toMatchObject({ evidenceState: "APPLIED", disposition: "COMPLETE" });
+    expect(log).toEqual(["observe"]);
+    expect(ledger.count("r5ok")).toBe(1);
+  });
+
+  it("requiresReview after a definitive not-applied response, then approved and still not applied: one new attempt", async () => {
+    const store = new ClockStore();
+    const ledger = makeLedger();
+    const log: string[] = [];
+    let reviewed = false;
+    const contract = makeContract(
+      ledger,
+      ({ attemptNumber }) => (attemptNumber === 1 || reviewed ? { decision: "proceed" } : { decision: "requiresReview" }),
+      log
+    );
+    ledger.next = "rejectNext";
+    await runEffect(store, contract, { identity: "r5ok2", intent });
+    await runEffect(store, contract, { identity: "r5ok2", intent });
+    reviewed = true;
+    log.length = 0;
+    const approved = await runEffect(store, contract, { identity: "r5ok2", intent, reviewDecision: "approved" });
+    expect(log).toEqual(["observe", "revalidate#2", "execute", "observe"]);
+    expect(approved.disposition).toBe("COMPLETE");
+    expect(ledger.count("r5ok2")).toBe(1);
   });
 
   it("recovering a reserved attempt after a crash never calls revalidate() (it never executes)", async () => {
