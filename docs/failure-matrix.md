@@ -89,13 +89,13 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 7.14 | Approved with a `ReviewDecision` | Recorded on the operation with reviewer, times and the recorded intent's fingerprint, and copied onto the attempt it allowed; survives a restart | Once | T134, T140 |
 | 7.15 | Rejected with a `ReviewDecision` | `CLOSED`, `POLICY_REVIEW_REJECTED` naming the reviewer; a later decision can't replace it | Never | T135, T141 |
 | 7.16 | The reviewer was shown a different intent (`intentFingerprint` doesn't match) | Refused (throws); nothing recorded | Not on that approval | T136 |
-| 7.17 | Malformed `reviewDecision` (no reviewer, `expiresAt` on a rejection, a time that isn't strict RFC 3339 with `Z` or an offset, a date that doesn't exist…) | `TypeError` before anything is recorded; valid times are stored in one canonical UTC form | No | T137, T148 |
+| 7.17 | Malformed decision passed to `reviewEffect()` (no reviewer, `expiresAt` on a rejection, a time that isn't strict RFC 3339 with `Z` or an offset, a date that doesn't exist…) | `TypeError` before anything is recorded; valid times are stored in one canonical UTC form | No | T137, T148 |
 | 7.18 | Approval already expired when it arrives | Refused (throws); nothing recorded | No | T138 |
 | 7.19 | Approval expires before a later attempt, or while `revalidate()` is running | `AWAITING_REVIEW` with `APPROVAL_EXPIRED`; checked again after `revalidate()` returns, at the time the attempt would start; a new approval allows the attempt | Not until re-approved | T139, T144, T147 |
 | 7.20 | Approval no longer matches the recorded intent under the contract's current fingerprint rules | `AWAITING_REVIEW` with `APPROVAL_INTENT_MISMATCH` | Not until re-approved | T142 |
 | 7.21 | Approver policy (e.g. no self-approval) | Up to `revalidate()`, which receives the approval and this call's `context` | Only when it says `proceed` | T143 |
 | 7.22 | `runEffect()` called with 0.3's `reviewDecision: "approved"` / `"rejected"` | `TypeError` pointing to `reviewEffect()`; nothing recorded. `runEffect()` has no way to approve | No | T145 |
-| 7.23 | An operation approved by 0.3.x, which recorded no decision, after upgrading | `AWAITING_REVIEW` with `APPROVAL_NOT_RECORDED` before any further attempt | Not until re-approved | T149, T150 |
+| 7.23 | An operation approved by 0.3.x, which recorded no decision (or any approval on record without a reviewer), after upgrading | `AWAITING_REVIEW` with `APPROVAL_NOT_RECORDED` before any further attempt | Not until re-approved | T149, T150, T159 |
 | 7.24 | `reviewEffect()` records a decision | Records it and nothing else: no `execute()`, no `observe()`; the result says approved, not attempted since (also after earlier attempts); the next `runEffect()` attempts | Not by `reviewEffect()` | T151, T155 |
 | 7.25 | `runEffect()` is handed a decision object (e.g. by an agent's tool) | `TypeError`, nothing recorded: decisions only go through `reviewEffect()` | No | T152 |
 | 7.26 | `reviewEffect()` while another call holds the operation (or writes to it mid-review), or on one that isn't awaiting review | Busy: `OperationBusyError`, nothing recorded. Not awaiting review: current state returned, nothing recorded | No | T153, T154, T156, T157 |
@@ -334,3 +334,4 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 - **T156** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "reviewEffect() throws OperationBusyError while another process holds the operation's advisory lock"
 - **T157** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a concurrent write while the decision is being recorded is OperationBusyError, and the decision isn't recorded"
 - **T158** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a review record without attemptCount is treated as recent: the next runEffect() re-observes first"
+- **T159** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval on record without a reviewer isn't honored: it needs a new review"

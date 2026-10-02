@@ -652,10 +652,16 @@ async function checkThenAttempt<Intent, Observation, Evidence, Context>(
     version: record.version,
     attemptNumber: record.attempts.length + 1
   };
-  const approval = record.review?.decision === "approved" ? { ...record.review } : null;
-  // Left review (it has a review reason) but no decision is recorded: approved by corrobo
-  // 0.3.x, which kept no record of who approved what. Fail closed: it needs a fresh review.
-  const unrecordedApproval = !record.review && record.reviewReason !== undefined;
+  // An approval counts only with a recorded reviewer.
+  const attributed =
+    record.review?.decision === "approved" &&
+    typeof record.review.reviewer === "string" &&
+    record.review.reviewer.trim() !== "";
+  const approval = attributed ? { ...record.review! } : null;
+  // Left review (it has a review reason) without an attributed approval on record: approved by
+  // corrobo 0.3.x, which kept no record of who approved what, or a record missing its reviewer.
+  // Fail closed: it needs a fresh review.
+  const unrecordedApproval = !approval && record.reviewReason !== undefined;
   if (!contract.revalidate && !approval && !unrecordedApproval) {
     return performAttempt(store, contract, base, request.intent);
   }

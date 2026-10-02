@@ -610,4 +610,30 @@ describe("reviewEffect(): deciding is separate from acting", () => {
     expect(observes).toBe(1);
     expect(ledger.count("s7")).toBe(1);
   });
+
+  it("an approval on record without a reviewer isn't honored: it needs a new review", async () => {
+    const store = new ClockStore();
+    const ledger = makeLedger();
+    const contract = makeContract(ledger);
+    await awaitingReview(store, contract, "s8");
+    const record = await store.getOperation("s8");
+    await store.updateOperation(
+      "s8",
+      {
+        status: "OPEN",
+        review: {
+          decision: "approved",
+          reviewer: null as unknown as string,
+          decidedAt: store.iso(),
+          intentFingerprint: fingerprintIntent(contract, intent),
+          recordedAt: store.iso(),
+          attemptCount: 0
+        }
+      },
+      record!.version
+    );
+    const result = await runEffect(store, contract, { identity: "s8", intent });
+    expect(result).toMatchObject({ status: "AWAITING_REVIEW", dispositionReason: { code: "APPROVAL_NOT_RECORDED" } });
+    expect(ledger.credits).toEqual([]);
+  });
 });
