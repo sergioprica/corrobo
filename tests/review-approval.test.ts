@@ -217,6 +217,24 @@ describe("review decisions are recorded and bound", () => {
     expect(ledger.credits).toEqual([]);
   });
 
+  it("each field of a decision is read once: a getter that changes its answer can't slip past validation", async () => {
+    const store = new ClockStore();
+    const ledger = makeLedger();
+    const contract = makeContract(ledger);
+    await awaitingReview(store, contract, "a8");
+    let reads = 0;
+    const shifty = {
+      get decision() {
+        reads += 1;
+        return reads === 1 ? "approved" : "maybe";
+      },
+      reviewer: "alice"
+    };
+    const result = await runEffect(store, contract, { identity: "a8", intent, reviewDecision: shifty as ReviewDecision });
+    expect(reads).toBe(1);
+    expect(result.review?.decision).toBe("approved");
+  });
+
   it("the deprecated string form still works, and is recorded with reviewer null", async () => {
     const store = new ClockStore();
     const ledger = makeLedger();

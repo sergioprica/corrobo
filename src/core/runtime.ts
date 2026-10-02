@@ -126,24 +126,25 @@ function normalizeReviewDecision(input: EffectRequest<unknown>["reviewDecision"]
     throw new TypeError(`corrobo: reviewDecision ${problem}; nothing was recorded or executed.`);
   };
   if (typeof input !== "object" || input === null) fail(`must be a ReviewDecision object (or "approved" / "rejected")`);
-  const d = input as ReviewDecision;
-  if (d.decision !== "approved" && d.decision !== "rejected") fail(`.decision must be "approved" or "rejected"`);
-  if (typeof d.reviewer !== "string" || d.reviewer.trim() === "") fail(`.reviewer must be a non-empty string`);
-  if (d.decidedAt !== undefined && !isIsoTime(d.decidedAt)) fail(`.decidedAt must be an ISO date string`);
-  if (d.expiresAt !== undefined) {
-    if (d.decision !== "approved") fail(`.expiresAt applies only to approvals`);
-    if (!isIsoTime(d.expiresAt)) fail(`.expiresAt must be an ISO date string`);
-    if (d.decidedAt !== undefined && Date.parse(d.expiresAt) <= Date.parse(d.decidedAt)) {
+  // Each field is read exactly once, so what is validated is what is recorded.
+  const { decision, reviewer, decidedAt, expiresAt, intentFingerprint, note } = input as ReviewDecision;
+  if (decision !== "approved" && decision !== "rejected") fail(`.decision must be "approved" or "rejected"`);
+  if (typeof reviewer !== "string" || reviewer.trim() === "") fail(`.reviewer must be a non-empty string`);
+  if (decidedAt !== undefined && !isIsoTime(decidedAt)) fail(`.decidedAt must be an ISO date string`);
+  if (expiresAt !== undefined) {
+    if (decision !== "approved") fail(`.expiresAt applies only to approvals`);
+    if (!isIsoTime(expiresAt)) fail(`.expiresAt must be an ISO date string`);
+    if (decidedAt !== undefined && Date.parse(expiresAt) <= Date.parse(decidedAt)) {
       fail(`.expiresAt must be after .decidedAt`);
     }
   }
-  if (d.intentFingerprint !== undefined && typeof d.intentFingerprint !== "string") fail(`.intentFingerprint must be a string`);
-  if (d.note !== undefined && typeof d.note !== "string") fail(`.note must be a string`);
-  const review: NonNullable<ResolvedRequest<unknown>["review"]> = { decision: d.decision, reviewer: d.reviewer };
-  if (d.decidedAt !== undefined) review.decidedAt = d.decidedAt;
-  if (d.expiresAt !== undefined) review.expiresAt = d.expiresAt;
-  if (d.intentFingerprint !== undefined) review.intentFingerprint = d.intentFingerprint;
-  if (d.note !== undefined) review.note = d.note;
+  if (intentFingerprint !== undefined && typeof intentFingerprint !== "string") fail(`.intentFingerprint must be a string`);
+  if (note !== undefined && typeof note !== "string") fail(`.note must be a string`);
+  const review: NonNullable<ResolvedRequest<unknown>["review"]> = { decision, reviewer };
+  if (decidedAt !== undefined) review.decidedAt = decidedAt;
+  if (expiresAt !== undefined) review.expiresAt = expiresAt;
+  if (intentFingerprint !== undefined) review.intentFingerprint = intentFingerprint;
+  if (note !== undefined) review.note = note;
   return review;
 }
 
@@ -785,7 +786,7 @@ async function runCoordinated<Intent, Observation, Evidence, Context>(
       return resultFromRecord(existing);
     }
     const review = await recordReview(store, contract, existing, request.review);
-    if (review.decision === "rejected") {
+    if (review.decision !== "approved") {
       const closed = await store.updateOperation(existing.identity.id, { status: "CLOSED", review }, existing.version);
       return resultFromRecord(closed);
     }
