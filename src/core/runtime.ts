@@ -114,8 +114,26 @@ type ResolvedRequest<Intent, Context = unknown> = Omit<EffectRequest<Intent, Con
   review?: Omit<ReviewDecision, "reviewer"> & { reviewer: string | null };
 };
 
-function isIsoTime(value: unknown): value is string {
-  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,9})?(Z|[+-](\d{2}):(\d{2}))$/i;
+
+/**
+ * A strict, absolute RFC 3339 timestamp (`Z` or an explicit offset) that names a real calendar
+ * time, canonicalized to `toISOString()` form; otherwise null. Deliberately not Date.parse(),
+ * which accepts other formats, rolls 30 February over to March, and reads a time without an
+ * offset in the host's local zone, so two workers could disagree about when an approval expires.
+ */
+function canonicalTime(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const m = RFC3339.exec(value);
+  if (!m) return null;
+  const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number);
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const offsetOk = m[8].toUpperCase() === "Z" || (Number(m[9]) <= 23 && Number(m[10]) <= 59);
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth || hour > 23 || minute > 59 || second > 59 || !offsetOk) {
+    return null;
+  }
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
 }
 
 /** Validates a reviewDecision before anything runs: a malformed approval must never count as one. */
@@ -130,19 +148,21 @@ function normalizeReviewDecision(input: EffectRequest<unknown>["reviewDecision"]
   const { decision, reviewer, decidedAt, expiresAt, intentFingerprint, note } = input as ReviewDecision;
   if (decision !== "approved" && decision !== "rejected") fail(`.decision must be "approved" or "rejected"`);
   if (typeof reviewer !== "string" || reviewer.trim() === "") fail(`.reviewer must be a non-empty string`);
-  if (decidedAt !== undefined && !isIsoTime(decidedAt)) fail(`.decidedAt must be an ISO date string`);
+  const timeFormat = `an RFC 3339 timestamp with Z or an offset, e.g. "2026-10-01T12:00:00Z"`;
+  const decided = decidedAt === undefined ? undefined : (canonicalTime(decidedAt) ?? fail(`.decidedAt must be ${timeFormat}`));
+  let expires: string | undefined;
   if (expiresAt !== undefined) {
     if (decision !== "approved") fail(`.expiresAt applies only to approvals`);
-    if (!isIsoTime(expiresAt)) fail(`.expiresAt must be an ISO date string`);
-    if (decidedAt !== undefined && Date.parse(expiresAt) <= Date.parse(decidedAt)) {
+    expires = canonicalTime(expiresAt) ?? fail(`.expiresAt must be ${timeFormat}`);
+    if (decided !== undefined && Date.parse(expires) <= Date.parse(decided)) {
       fail(`.expiresAt must be after .decidedAt`);
     }
   }
   if (intentFingerprint !== undefined && typeof intentFingerprint !== "string") fail(`.intentFingerprint must be a string`);
   if (note !== undefined && typeof note !== "string") fail(`.note must be a string`);
   const review: NonNullable<ResolvedRequest<unknown>["review"]> = { decision, reviewer };
-  if (decidedAt !== undefined) review.decidedAt = decidedAt;
-  if (expiresAt !== undefined) review.expiresAt = expiresAt;
+  if (decided !== undefined) review.decidedAt = decided;
+  if (expires !== undefined) review.expiresAt = expires;
   if (intentFingerprint !== undefined) review.intentFingerprint = intentFingerprint;
   if (note !== undefined) review.note = note;
   return review;
@@ -417,7 +437,9 @@ async function performAttempt<Intent, Observation, Evidence>(
   check?: PreExecuteCheck
 ): Promise<EffectResult<Observation>> {
   const { identity, attemptNumber } = base;
-  const startedAt = await safetyNow(store);
+  // With a check, the attempt starts at the reading the check was made against (an approval's
+  // expiry is judged at the attempt's start time, not some earlier moment).
+  const startedAt = check ? check.checkedAt : await safetyNow(store);
 
   const reservedRecord = await store.reserveAttempt(
     identity.id,
@@ -478,6 +500,13 @@ function checkApproval(
   }
   return null;
 }
+
+const APPROVAL_NOT_RECORDED: ReasonCode = {
+  code: "APPROVAL_NOT_RECORDED",
+  summary:
+    "This operation was approved before corrobo recorded review decisions (0.3.x), so there is no record of who " +
+    "approved what. Nothing was executed; it needs a new review."
+};
 
 /** What performAttempt needs from the record, read before revalidate() sees the record. */
 interface AttemptBase {
@@ -579,18 +608,29 @@ async function checkThenAttempt<Intent, Observation, Evidence, Context>(
     attemptNumber: record.attempts.length + 1
   };
   const approval = record.review?.decision === "approved" ? { ...record.review } : null;
-  if (!contract.revalidate && !approval) {
+  // Left review (it has a review reason) but no decision is recorded: approved by corrobo
+  // 0.3.x, which kept no record of who approved what. Fail closed: it needs a fresh review.
+  const unrecordedApproval = !record.review && record.reviewReason !== undefined;
+  if (!contract.revalidate && !approval && !unrecordedApproval) {
     return performAttempt(store, contract, base, request.intent);
   }
 
   // corrobo's own checks of the approval come first; revalidate() only sees a valid one.
-  const approvalProblem = approval ? checkApproval(contract, record, approval, await safetyNow(store)) : null;
-  const result: Pick<PreExecuteCheck, "outcome" | "reason"> = approvalProblem
-    ? { outcome: "requiresReview", reason: approvalProblem }
+  // They run again after revalidate() (which may take a while), at the reading the attempt
+  // then starts at, so an approval can't expire between the check and the reservation.
+  const approvalProblem = (now: string): ReasonCode | null =>
+    unrecordedApproval ? APPROVAL_NOT_RECORDED : approval ? checkApproval(contract, record, approval, now) : null;
+  const before = approvalProblem(await safetyNow(store));
+  let result: Pick<PreExecuteCheck, "outcome" | "reason"> = before
+    ? { outcome: "requiresReview", reason: before }
     : contract.revalidate
       ? await runRevalidate(contract, record, request, base.attemptNumber, approval)
       : { outcome: "proceed", reason: approvedReason(approval!) };
   const checkedAt = await safetyNow(store);
+  if (result.outcome === "proceed") {
+    const after = approvalProblem(checkedAt);
+    if (after) result = { outcome: "requiresReview", reason: after };
+  }
   const checked = {
     reason: result.reason,
     ...(approval ? { approval } : {}),

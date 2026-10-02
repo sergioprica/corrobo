@@ -89,12 +89,13 @@ Vocabulary: evidence states `APPLIED` · `NOT_APPLIED` · `CONFLICTED` · `PENDI
 | 7.14 | Approved with a `ReviewDecision` | Recorded on the operation with reviewer, times and the recorded intent's fingerprint, and copied onto the attempt it allowed; survives a restart | Once | T134, T140 |
 | 7.15 | Rejected with a `ReviewDecision` | `CLOSED`, `POLICY_REVIEW_REJECTED` naming the reviewer; a later decision can't replace it | Never | T135, T141 |
 | 7.16 | The reviewer was shown a different intent (`intentFingerprint` doesn't match) | Refused (throws); nothing recorded | Not on that approval | T136 |
-| 7.17 | Malformed `reviewDecision` (no reviewer, bad dates, `expiresAt` on a rejection…) | `TypeError` before anything is recorded | No | T137 |
+| 7.17 | Malformed `reviewDecision` (no reviewer, `expiresAt` on a rejection, a time that isn't strict RFC 3339 with `Z` or an offset, a date that doesn't exist…) | `TypeError` before anything is recorded; valid times are stored in one canonical UTC form | No | T137, T148 |
 | 7.18 | Approval already expired when it arrives | Refused (throws); nothing recorded | No | T138 |
-| 7.19 | Approval expires before a later attempt | `AWAITING_REVIEW` with `APPROVAL_EXPIRED`; `revalidate()` never sees it; a new approval allows the attempt | Not until re-approved | T139, T144 |
+| 7.19 | Approval expires before a later attempt, or while `revalidate()` is running | `AWAITING_REVIEW` with `APPROVAL_EXPIRED`; checked again after `revalidate()` returns, at the time the attempt would start; a new approval allows the attempt | Not until re-approved | T139, T144, T147 |
 | 7.20 | Approval no longer matches the recorded intent under the contract's current fingerprint rules | `AWAITING_REVIEW` with `APPROVAL_INTENT_MISMATCH` | Not until re-approved | T142 |
 | 7.21 | Approver policy (e.g. no self-approval) | Up to `revalidate()`, which receives the approval and this call's `context` | Only when it says `proceed` | T143 |
 | 7.22 | `"approved"` / `"rejected"` strings (deprecated) | Still work; recorded with `reviewer: null` | As before | T145, T48 |
+| 7.23 | An operation approved by 0.3.x, which recorded no decision, after upgrading | `AWAITING_REVIEW` with `APPROVAL_NOT_RECORDED` before any further attempt | Not until re-approved | T149, T150 |
 
 ## 8. Concurrency and lock loss
 
@@ -317,3 +318,7 @@ Error **messages** are still persisted: if your code puts secrets into an error 
 - **T144** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "a crash after the approval is recorded but before the attempt: the next call checks the approval again"
 - **T145** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "the deprecated string form still works, and is recorded with reviewer null"
 - **T146** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "migrate() adds the review column to an older table and keeps its rows"
+- **T147** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an approval that expires while revalidate() runs doesn't allow the attempt, and the attempt starts at the time it was checked"
+- **T148** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "times with an offset are recorded in one canonical UTC form"
+- **T149** [`tests/review-approval.test.ts`](../tests/review-approval.test.ts) — "an operation approved by corrobo 0.3.x (no recorded decision) needs a new review %s"
+- **T150** [`tests/postgres-review.test.ts`](../tests/postgres-review.test.ts) — "a row approved under 0.3.x (OPEN, a review reason, no recorded decision) needs a new review before any attempt"

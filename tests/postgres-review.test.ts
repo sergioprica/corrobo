@@ -57,6 +57,18 @@ describe.skipIf(!connectionString)("PostgresStore: recorded review decisions", (
     expect(result.dispositionReason.code).toBe("POLICY_REVIEW_REJECTED");
   });
 
+  it("a row approved under 0.3.x (OPEN, a review reason, no recorded decision) needs a new review before any attempt", async () => {
+    await pool.query(
+      `INSERT INTO corrobo_operations (id, operation_type, intent, status, review_reason, attempts, version)
+       VALUES ('old-approved', 'pg/refund', '{"orderId":"9"}', 'OPEN',
+               '{"code":"POLICY_REVIEW_REQUIRED","summary":"needs review"}', '[]', 2)`
+    );
+    const store = new PostgresStore(pool, { acknowledgePersistence: true });
+    const result = await runEffect(store, contract, { identity: "old-approved", intent: { orderId: "9" } });
+    expect(result).toMatchObject({ status: "AWAITING_REVIEW", dispositionReason: { code: "APPROVAL_NOT_RECORDED" } });
+    expect(credits).not.toContain("old-approved");
+  });
+
   it("an approval survives a restart: the review, and the approval on the attempt it allowed, read back exactly", async () => {
     const intent = { orderId: "7" };
     const store = new PostgresStore(pool, { acknowledgePersistence: true });

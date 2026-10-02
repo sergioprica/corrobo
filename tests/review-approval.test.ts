@@ -202,6 +202,10 @@ describe("review decisions are recorded and bound", () => {
       { decision: "approved", reviewer: "alice", decidedAt: "2030-01-02T00:00:00Z", expiresAt: "2030-01-01T00:00:00Z" }
     ],
     ["a non-string note", { decision: "approved", reviewer: "alice", note: 42 }],
+    ["a non-ISO date", { decision: "approved", reviewer: "alice", expiresAt: "12/31/2099" }],
+    ["a date that doesn't exist", { decision: "approved", reviewer: "alice", expiresAt: "2099-02-30T00:00:00Z" }],
+    ["a time with no offset (host-timezone dependent)", { decision: "approved", reviewer: "alice", expiresAt: "2099-01-01T00:00:00" }],
+    ["a date with no time", { decision: "approved", reviewer: "alice", decidedAt: "2026-10-01" }],
     ["a number", 1],
     ["null", null]
   ])("a malformed reviewDecision (%s) throws before anything is recorded or executed", async (_label, decision) => {
@@ -233,6 +237,23 @@ describe("review decisions are recorded and bound", () => {
     const result = await runEffect(store, contract, { identity: "a8", intent, reviewDecision: shifty as ReviewDecision });
     expect(reads).toBe(1);
     expect(result.review?.decision).toBe("approved");
+  });
+
+  it("times with an offset are recorded in one canonical UTC form", async () => {
+    const store = new ClockStore();
+    const contract = makeContract(makeLedger());
+    await awaitingReview(store, contract, "a9");
+    const result = await runEffect(store, contract, {
+      identity: "a9",
+      intent,
+      reviewDecision: {
+        decision: "approved",
+        reviewer: "alice",
+        decidedAt: "2026-10-01T16:30:00+05:00",
+        expiresAt: "2099-01-01T05:00:00.5+05:00"
+      }
+    });
+    expect(result.review).toMatchObject({ decidedAt: "2026-10-01T11:30:00.000Z", expiresAt: "2099-01-01T00:00:00.500Z" });
   });
 
   it("the deprecated string form still works, and is recorded with reviewer null", async () => {
@@ -289,6 +310,89 @@ describe("approvals are checked before every attempt", () => {
     expect(renewed.disposition).toBe("COMPLETE");
     expect(renewed.attempts[1].check?.approval?.reviewer).toBe("bob");
     expect(ledger.count("e1")).toBe(1);
+  });
+
+  it("an approval that expires while revalidate() runs doesn't allow the attempt, and the attempt starts at the time it was checked", async () => {
+    const store = new ClockStore();
+    const ledger = makeLedger();
+    let slow = true;
+    const contract = makeContract(ledger, {
+      revalidate: () => {
+        if (slow) store.time += 2_000; // the policy service takes two seconds
+        return { decision: "proceed" };
+      }
+    });
+    await awaitingReview(store, contract, "e2");
+    const result = await runEffect(store, contract, {
+      identity: "e2",
+      intent,
+      reviewDecision: { decision: "approved", reviewer: "alice", expiresAt: store.iso(1_000) }
+    });
+    expect(result).toMatchObject({ status: "AWAITING_REVIEW", dispositionReason: { code: "APPROVAL_EXPIRED" } });
+    expect(result.attempts).toEqual([]);
+    expect(ledger.credits).toEqual([]);
+
+    slow = false;
+    const renewed = await runEffect(store, contract, {
+      identity: "e2",
+      intent,
+      reviewDecision: { decision: "approved", reviewer: "alice", expiresAt: store.iso(1_000) }
+    });
+    expect(renewed.disposition).toBe("COMPLETE");
+    expect(renewed.attempts[0].startedAt).toBe(renewed.attempts[0].check?.checkedAt);
+    expect(ledger.count("e2")).toBe(1);
+  });
+
+  it.each([
+    ["before its first attempt", false],
+    ["after an attempt that asked for a retry", true]
+  ])("an operation approved by corrobo 0.3.x (no recorded decision) needs a new review %s", async (_label, withRetry) => {
+    const store = new ClockStore();
+    const ledger = makeLedger();
+    const contract = makeContract(ledger);
+    // What a 0.3.x approval left behind: OPEN, the review reason, and no record of the decision.
+    await store.createOperation({
+      identity: { id: "legacy", operationType: "payments/refund" },
+      intent,
+      status: "OPEN",
+      reviewReason: { code: "POLICY_REVIEW_REQUIRED", summary: "needs review" }
+    });
+    if (withRetry) {
+      ledger.respondNotAppliedOnce();
+      const record = await store.getOperation("legacy");
+      await store.reserveAttempt("legacy", { attemptNumber: 1, startedAt: store.iso() }, record!.version);
+      const reserved = await store.getOperation("legacy");
+      await ledger.credit("legacy"); // the not-applied response
+      await store.updateLatestAttempt(
+        "legacy",
+        {
+          status: "RESOLVED",
+          attemptNumber: 1,
+          startedAt: store.iso(),
+          updatedAt: store.iso(),
+          transport: { ok: true, evidence: { applied: false } },
+          observations: [{ status: "observed", data: 0, authoritative: true, source: "ledger", observedAt: store.iso() }],
+          evidenceState: "NOT_APPLIED",
+          evidenceReason: { code: "NONE", summary: "none" },
+          disposition: "RETRY",
+          dispositionReason: { code: "SAFE_RETRY", summary: "retry" }
+        },
+        "OPEN",
+        reserved!.version
+      );
+    }
+
+    const result = await runEffect(store, contract, { identity: "legacy", intent });
+    expect(result).toMatchObject({ status: "AWAITING_REVIEW", dispositionReason: { code: "APPROVAL_NOT_RECORDED" } });
+    expect(ledger.credits).toEqual([]);
+
+    const approved = await runEffect(store, contract, {
+      identity: "legacy",
+      intent,
+      reviewDecision: { decision: "approved", reviewer: "alice" }
+    });
+    expect(approved.disposition).toBe("COMPLETE");
+    expect(ledger.count("legacy")).toBe(1);
   });
 
   it("revalidate() receives the approval and can enforce approver policy (no self-approval)", async () => {
