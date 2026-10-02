@@ -78,6 +78,7 @@
     "example:stripe:live-smoke": "tsx examples/stripe-refund/live-smoke.ts",
     "example:jev": "tsx examples/jev-refund/demo.ts",
     "example:jev:live": "tsx examples/jev-refund/live.ts",
+    "example:action-table": "tsx examples/action-table/demo.ts",
     "verify": "npm run typecheck && npm run test && npm run build"
   },
   "devDependencies": {

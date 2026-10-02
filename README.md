@@ -67,6 +67,16 @@ async function main() {
 
 `InMemoryStore` is for trying things out: it forgets everything when the process exits, so a restarted worker would see the refund as new. For anything where a restart or a second worker matters, use [`PostgresStore`](#in-production-postgresstore).
 
+## Where the identity comes from
+
+The identity is what makes "call it again" safe, so it has to name one *decision to act*: not one attempt, and not one request.
+
+- **Mint it when the action is confirmed, on the server, and store it with that action:** when the user clicks "Confirm refund", or when an agent's proposed action is approved. Every retry, worker and restart then reads it from there.
+- **Don't create it inside the retry loop or the tool call,** and don't let a model choose it. A new identity per attempt means a new refund per attempt.
+- **Same intent, new identity, new effect.** That's right when someone really asked twice, and wrong when it's a retry. Derive the identity from the intent (say, `refund-order-1001`) only if your rule really is "at most one per order".
+
+If your app already has a row for each action (refund requests, agent tool calls, receipts), use that row's primary key as the identity. [`examples/action-table`](examples/action-table) shows the pattern: corrobo's record says whether the effect happened, your row says what was asked for and by whom, and a sweeper reconciles the two after a crash.
+
 ## What corrobo tells you
 
 Two answers, kept separate on purpose: what the evidence shows, and what's safe to do next.
@@ -146,6 +156,7 @@ Two things it would be wrong to claim: that corrobo never handles personal data 
 
 - **[`examples/timeout-after-write`](examples/timeout-after-write)** — `npm run demo`, shown above. Its tests also cover a request lost *before* commit and one that lands *late*.
 - **[`examples/quickstart`](examples/quickstart)** — `npm run quickstart`, the code above.
+- **[`examples/action-table`](examples/action-table)** — `npm run example:action-table`: linking corrobo's record to your app's own action table (identity minted at confirmation, a sweeper after a crash, a join for operators).
 - **[`examples/conformance`](examples/conformance)** — `npm run conformance`: the conformance harness against a reference fake, passing and then failing on a too-short `maxInFlightMs`.
 - **[`examples/dbos-workflow`](examples/dbos-workflow)** — corrobo inside a [DBOS](https://docs.dbos.dev) workflow step, across a real `SIGKILL` between the write and DBOS's checkpoint. Its own package: build the root first (`npm run build`), then `npm install && npm run demo` in that folder, with `DATABASE_URL`.
 - **[`examples/stripe-refund`](examples/stripe-refund)** — Stripe refunds with idempotency keys and corrobo together, including the key's retention window. `npm run example:stripe` runs against a fake Stripe (no network); an optional test-mode smoke script needs `sk_test_` credentials.
