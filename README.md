@@ -91,6 +91,8 @@ Two answers, kept separate on purpose: what the evidence shows, and what's safe 
 
 Plus `REVIEW`: an optional `authorize()` hook can require human sign-off *before* anything is executed; a reviewer can approve or reject.
 
+**Checking again before each attempt.** An approval given now, or a retry an hour from now, can act on a world that has changed: the order was cancelled, the agent's scope was revoked. An optional `revalidate()` hook runs right before every attempt, including the first, with the current caller's `context`, and can let it `proceed`, send it to `requiresReview`, or `reject` it (`REPLAN`). It never blocks corrobo from finding out what an earlier attempt did, and if it throws, nothing runs. It narrows the gap between checking and acting but can't close it, so use the provider's conditional writes too where it has them. Details: [spec §M.1](docs/v0.1-spec.md#m1-revalidation-before-each-attempt).
+
 **Requests can land late.** A timed-out request isn't undone, it's just unanswered, and it can still be applied after corrobo first looks. So when a failed call is followed by `NOT_APPLIED` while that request could still land, the `RETRY` comes with a `retryNotBefore` time (your declared `maxInFlightMs` after the attempt started): calling earlier does nothing, and calling after it makes corrobo check once more before it executes again. If you don't declare `maxInFlightMs`, the answer is `INVESTIGATE`. Details: [spec §O](docs/v0.1-spec.md#o-fencing-and-settlement-when-the-lock-is-not-enough).
 
 ## Test your contract

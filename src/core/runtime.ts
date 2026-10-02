@@ -5,6 +5,7 @@ import { StoreConflictError } from "./store";
 import type { CoordinatedStore, EffectStore } from "./store";
 import type {
   AttemptRecord,
+  BlockingCheck,
   EffectContract,
   EffectRequest,
   EffectResult,
@@ -13,6 +14,7 @@ import type {
   OperationIdentity,
   OperationRecord,
   OperationStatus,
+  PreExecuteCheck,
   ReasonCode,
   ReservedAttempt,
   ResolvedAttempt,
@@ -103,12 +105,14 @@ function prepareIntent<Intent>(contract: EffectContract<Intent, unknown, unknown
 }
 
 /** An EffectRequest after identity shorthand is resolved (see runEffect). */
-type ResolvedRequest<Intent> = Omit<EffectRequest<Intent>, "identity"> & { identity: OperationIdentity };
+type ResolvedRequest<Intent, Context = unknown> = Omit<EffectRequest<Intent, Context>, "identity"> & {
+  identity: OperationIdentity;
+};
 
-function resolveRequest<Intent>(
-  contract: EffectContract<Intent, unknown, unknown>,
-  request: EffectRequest<Intent>
-): ResolvedRequest<Intent> {
+function resolveRequest<Intent, Context>(
+  contract: EffectContract<Intent, unknown, unknown, Context>,
+  request: EffectRequest<Intent, Context>
+): ResolvedRequest<Intent, Context> {
   if (typeof request.identity === "string") {
     return { ...request, identity: { id: request.identity, operationType: contract.operationType } };
   }
@@ -119,12 +123,12 @@ function resolveRequest<Intent>(
         `operationType, or run it with the matching contract.`
     );
   }
-  return request as ResolvedRequest<Intent>;
+  return request as ResolvedRequest<Intent, Context>;
 }
 
 function assertSameLogicalOperation<Intent>(
-  contract: EffectContract<Intent, unknown, unknown>,
-  request: ResolvedRequest<Intent>,
+  contract: EffectContract<Intent, unknown, unknown, any>,
+  request: ResolvedRequest<Intent, any>,
   prepared: PreparedIntent,
   existing: OperationRecord
 ): void {
@@ -181,30 +185,72 @@ async function safeObserve<Intent, Observation, Evidence>(
   }
 }
 
+/**
+ * The result for an operation whose current state was set before any (further) attempt: it is
+ * awaiting review, was rejected in review, or revalidate() stopped the next attempt. Evidence
+ * from the latest resolved attempt, if any, is still reported: a revalidation that stops
+ * attempt 2 doesn't change what attempt 1 found.
+ */
+function resultBeforeAttempt<Observation>(
+  record: OperationRecord,
+  disposition: EffectResult<Observation>["disposition"],
+  dispositionReason: ReasonCode
+): EffectResult<Observation> {
+  const latest = record.attempts[record.attempts.length - 1];
+  const resolved = latest?.status === "RESOLVED" ? latest : undefined;
+  const observation = resolved?.observations[resolved.observations.length - 1] ?? null;
+  return {
+    identity: record.identity,
+    status: record.status,
+    evidenceState: resolved?.evidenceState ?? null,
+    disposition,
+    evidenceReason: resolved?.evidenceReason ?? null,
+    dispositionReason,
+    observation: observation as ObservationResult<Observation> | null,
+    attempts: record.attempts,
+    retryNotBefore: null
+  };
+}
+
+/** The check that stopped the next attempt, if it still describes the record (see BlockingCheck). */
+function currentBlock(record: OperationRecord): BlockingCheck | null {
+  const blocked = record.blockedBy;
+  return blocked && blocked.recordVersion === record.version ? blocked : null;
+}
+
 function resultFromRecord<Observation>(record: OperationRecord): EffectResult<Observation> {
+  if (record.status === "AWAITING_REVIEW") {
+    return resultBeforeAttempt(record, "REVIEW", record.reviewReason ?? defaultReviewReason());
+  }
+
+  const blocked = currentBlock(record);
+  if (blocked?.outcome === "reject") {
+    return resultBeforeAttempt(record, "REPLAN", blocked.reason);
+  }
+  if (blocked?.outcome === "failed") {
+    return resultBeforeAttempt(record, null, blocked.reason);
+  }
+
   const latest = record.attempts[record.attempts.length - 1];
 
+  // CLOSED, yet the latest attempt didn't close it (there is none, or it asked for a retry):
+  // the only remaining way to close an operation is a review rejection before the next attempt.
+  const latestLeftItOpen =
+    latest?.status === "RESOLVED" && statusAfter(latest.evidenceState, latest.disposition) === "OPEN";
+  if (record.status === "CLOSED" && (!latest || latestLeftItOpen)) {
+    return resultBeforeAttempt(record, "REVIEW", {
+      code: "POLICY_REVIEW_REJECTED",
+      summary: "This operation was reviewed and rejected; nothing more will be attempted."
+    });
+  }
+
   if (!latest) {
-    // No attempt exists at all: either still AWAITING_REVIEW, or CLOSED because a review was
-    // rejected before execute() was ever called (see runCoordinated).
-    const dispositionReason =
-      record.status === "CLOSED"
-        ? {
-            code: "POLICY_REVIEW_REJECTED",
-            summary: "This operation was reviewed and rejected; it will not be attempted."
-          }
-        : (record.reviewReason ?? defaultReviewReason());
-    return {
-      identity: record.identity,
-      status: record.status,
-      evidenceState: null,
-      disposition: "REVIEW",
-      evidenceReason: null,
-      dispositionReason,
-      observation: null,
-      attempts: record.attempts,
-      retryNotBefore: null
-    };
+    // Not reachable: an operation with no attempt is AWAITING_REVIEW, CLOSED (above), or OPEN
+    // only for the instant before its first reservation. Report it as not yet attempted.
+    return resultBeforeAttempt(record, null, {
+      code: "OPERATION_IN_PROGRESS",
+      summary: "No attempt has been recorded yet. Call run() again shortly for a result."
+    });
   }
 
   if (latest.status === "RESERVED") {
@@ -271,7 +317,7 @@ function statusAfter(evidenceState: EvidenceState, disposition: ResolvedAttempt[
  */
 function resolveAttempt(
   contract: EffectContract<unknown, unknown, unknown>,
-  base: { attemptNumber: number; startedAt: string },
+  base: { attemptNumber: number; startedAt: string; check?: PreExecuteCheck },
   transport: TransportOutcome<unknown>,
   observations: ObservationResult<unknown>[],
   reconciliation: { evidenceState: EvidenceState; reason: ReasonCode },
@@ -293,6 +339,9 @@ function resolveAttempt(
   if (decision.retryNotBefore) {
     attempt.retryNotBefore = decision.retryNotBefore;
   }
+  if (base.check) {
+    attempt.check = base.check;
+  }
   return attempt;
 }
 
@@ -309,31 +358,162 @@ function resolveAttempt(
 async function performAttempt<Intent, Observation, Evidence>(
   store: CoordinatedStore,
   contract: EffectContract<Intent, Observation, Evidence>,
-  record: OperationRecord,
-  intent: Intent
+  base: AttemptBase,
+  intent: Intent,
+  check?: PreExecuteCheck
 ): Promise<EffectResult<Observation>> {
-  const attemptNumber = record.attempts.length + 1;
+  const { identity, attemptNumber } = base;
   const startedAt = await safetyNow(store);
 
-  const reservedRecord = await store.reserveAttempt(record.identity.id, { attemptNumber, startedAt }, record.version);
+  const reservedRecord = await store.reserveAttempt(
+    identity.id,
+    check ? { attemptNumber, startedAt, check } : { attemptNumber, startedAt },
+    base.version
+  );
 
-  const transport = await safeExecute(contract, intent, record.identity, attemptNumber);
-  const observation = await safeObserve(contract, intent, record.identity, transport, startedAt);
+  const transport = await safeExecute(contract, intent, identity, attemptNumber);
+  const observation = await safeObserve(contract, intent, identity, transport, startedAt);
   const reconciliation = contract.reconcile({ intent, transport, observation });
 
   const attempt = resolveAttempt(
     contract as EffectContract<unknown, unknown, unknown>,
-    { attemptNumber, startedAt },
+    check ? { attemptNumber, startedAt, check } : { attemptNumber, startedAt },
     transport as TransportOutcome<unknown>,
     [observation as ObservationResult<unknown>],
     reconciliation,
     await safetyNow(store)
   );
   const updated = await store.updateLatestAttempt(
-    record.identity.id,
+    identity.id,
     attempt,
     statusAfter(attempt.evidenceState, attempt.disposition),
     reservedRecord.version
+  );
+  return resultFromRecord(updated);
+}
+
+/** What performAttempt needs from the record, read before revalidate() sees the record. */
+interface AttemptBase {
+  identity: OperationIdentity;
+  version: number;
+  attemptNumber: number;
+}
+
+const REVALIDATION_DEFAULT_REASONS: Record<RevalidationOutcome, ReasonCode> = {
+  proceed: { code: "REVALIDATION_PASSED", summary: "revalidate() allowed this attempt." },
+  requiresReview: {
+    code: "REVALIDATION_REQUIRES_REVIEW",
+    summary: "revalidate() requires human review before this attempt is made. Nothing was executed."
+  },
+  reject: {
+    code: "REVALIDATION_REJECTED",
+    summary:
+      "revalidate() rejected this attempt. Nothing was executed, and this operation will not be attempted again; " +
+      "if the action is still wanted, it needs a fresh decision and a new identity."
+  }
+};
+
+type RevalidationOutcome = "proceed" | "requiresReview" | "reject";
+
+function isReasonCode(value: unknown): value is ReasonCode {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as ReasonCode).code === "string" &&
+    typeof (value as ReasonCode).summary === "string"
+  );
+}
+
+function revalidationFailed(summary: string): Pick<PreExecuteCheck, "outcome" | "reason"> {
+  return {
+    outcome: "failed",
+    reason: {
+      code: "REVALIDATION_FAILED",
+      summary: `${summary} Nothing was executed; the operation stays open, so a later call checks again.`
+    }
+  };
+}
+
+/** Runs revalidate(); anything other than a well-formed result fails closed (no execute). */
+async function runRevalidate<Intent, Context>(
+  contract: EffectContract<Intent, unknown, unknown, Context>,
+  record: OperationRecord,
+  request: ResolvedRequest<Intent, Context>,
+  attemptNumber: number
+): Promise<Pick<PreExecuteCheck, "outcome" | "reason">> {
+  let result: unknown;
+  try {
+    result = await contract.revalidate!({
+      intent: request.intent,
+      identity: { ...record.identity },
+      attemptNumber,
+      record,
+      context: request.context
+    });
+  } catch (err) {
+    return revalidationFailed(`revalidate() threw: ${errorMessage(err)}.`);
+  }
+  const decision = (result as { decision?: unknown } | null)?.decision;
+  if (decision !== "proceed" && decision !== "requiresReview" && decision !== "reject") {
+    return revalidationFailed(`revalidate() returned no valid decision (expected "proceed", "requiresReview" or "reject").`);
+  }
+  const reason = (result as { reason?: unknown }).reason;
+  if (reason !== undefined && !isReasonCode(reason)) {
+    return revalidationFailed(`revalidate() returned a reason without a string code and summary.`);
+  }
+  return { outcome: decision, reason: reason ?? REVALIDATION_DEFAULT_REASONS[decision] };
+}
+
+/**
+ * The only way runCoordinated makes a new attempt: revalidate() first (when the contract has
+ * one), then reserve and execute only if it says proceed. Runs before reserveAttempt, so a
+ * check that says no never leaves a reserved attempt that recovery would have to treat as an
+ * unknown outcome.
+ */
+async function checkThenAttempt<Intent, Observation, Evidence, Context>(
+  store: CoordinatedStore,
+  contract: EffectContract<Intent, Observation, Evidence, Context>,
+  record: OperationRecord,
+  request: ResolvedRequest<Intent, Context>
+): Promise<EffectResult<Observation>> {
+  // Read everything performAttempt needs before revalidate() is handed the record.
+  const base: AttemptBase = {
+    identity: { ...record.identity },
+    version: record.version,
+    attemptNumber: record.attempts.length + 1
+  };
+  if (!contract.revalidate) {
+    return performAttempt(store, contract, base, request.intent);
+  }
+
+  const result = await runRevalidate(contract, record, request, base.attemptNumber);
+  const checkedAt = await safetyNow(store);
+  if (result.outcome === "proceed") {
+    return performAttempt(store, contract, base, request.intent, {
+      outcome: "proceed",
+      reason: result.reason,
+      attemptNumber: base.attemptNumber,
+      checkedAt
+    });
+  }
+
+  const blockedBy: BlockingCheck = {
+    outcome: result.outcome,
+    reason: result.reason,
+    attemptNumber: base.attemptNumber,
+    checkedAt,
+    recordVersion: base.version + 1
+  };
+  const status: OperationStatus | undefined =
+    result.outcome === "requiresReview" ? "AWAITING_REVIEW" : result.outcome === "reject" ? "CLOSED" : undefined;
+  const updated = await store.updateOperation(
+    base.identity.id,
+    {
+      blockedBy,
+      ...(status ? { status } : {}),
+      ...(result.outcome === "requiresReview" ? { reviewReason: result.reason } : {})
+    },
+    base.version
   );
   return resultFromRecord(updated);
 }
@@ -429,12 +609,12 @@ async function reObserve<Intent, Observation, Evidence>(
  * "in progress" placeholder) immediately. Different identities never serialize against each
  * other. See docs/v0.1-spec.md for the exact guarantee this does and does not provide.
  */
-export async function runEffect<Intent, Observation, Evidence>(
+export async function runEffect<Intent, Observation, Evidence, Context = unknown>(
   store: EffectStore,
-  contract: EffectContract<Intent, Observation, Evidence>,
-  input: EffectRequest<Intent>
+  contract: EffectContract<Intent, Observation, Evidence, Context>,
+  input: EffectRequest<Intent, Context>
 ): Promise<EffectResult<Observation>> {
-  const request = resolveRequest(contract as EffectContract<Intent, unknown, unknown>, input);
+  const request = resolveRequest(contract as EffectContract<Intent, unknown, unknown, Context>, input);
   // Read the intent once, first. With the default fingerprint, an intent that can't be stored
   // faithfully as JSON is rejected here, before anything else happens — never after an effect.
   // A contract-supplied fingerprintIntent() takes responsibility for its own intents instead.
@@ -469,10 +649,10 @@ export async function runEffect<Intent, Observation, Evidence>(
   }
 }
 
-async function runCoordinated<Intent, Observation, Evidence>(
+async function runCoordinated<Intent, Observation, Evidence, Context>(
   store: CoordinatedStore,
-  contract: EffectContract<Intent, Observation, Evidence>,
-  request: ResolvedRequest<Intent>,
+  contract: EffectContract<Intent, Observation, Evidence, Context>,
+  request: ResolvedRequest<Intent, Context>,
   prepared: PreparedIntent
 ): Promise<EffectResult<Observation>> {
   const existing = await store.getOperation(request.identity.id);
@@ -482,7 +662,9 @@ async function runCoordinated<Intent, Observation, Evidence>(
   }
 
   if (!existing) {
-    const auth = contract.authorize ? await contract.authorize(request.intent) : { requiresReview: false };
+    const auth = contract.authorize
+      ? await contract.authorize(request.intent, { identity: { ...request.identity }, context: request.context })
+      : { requiresReview: false };
     const initialStatus: OperationStatus = auth.requiresReview ? "AWAITING_REVIEW" : "OPEN";
     const created = await store.createOperation({
       identity: request.identity,
@@ -494,7 +676,7 @@ async function runCoordinated<Intent, Observation, Evidence>(
     if (auth.requiresReview) {
       return resultFromRecord(created);
     }
-    return await performAttempt(store, contract, created, request.intent);
+    return await checkThenAttempt(store, contract, created, request);
   }
 
   if (existing.status === "CLOSED") {
@@ -503,20 +685,31 @@ async function runCoordinated<Intent, Observation, Evidence>(
 
   if (existing.status === "AWAITING_REVIEW") {
     if (request.reviewDecision === "rejected") {
-      const closed = await store.setStatus(existing.identity.id, "CLOSED", existing.version);
+      const closed = await store.updateOperation(existing.identity.id, { status: "CLOSED" }, existing.version);
       return resultFromRecord(closed);
     }
     if (request.reviewDecision !== "approved") {
       return resultFromRecord(existing);
     }
-    const reopened = await store.setStatus(existing.identity.id, "OPEN", existing.version);
-    return await performAttempt(store, contract, reopened, request.intent);
+    // Approved: continue exactly as an OPEN operation would. With no attempt yet that is the
+    // first attempt; after earlier attempts (revalidate() asked for review before attempt N)
+    // the settlement rules below still apply before anything is executed again.
+    const reopened = await store.updateOperation(existing.identity.id, { status: "OPEN" }, existing.version);
+    return await continueOpen(store, contract, reopened, request);
   }
 
-  // status === "OPEN"
+  return await continueOpen(store, contract, existing, request);
+}
+
+async function continueOpen<Intent, Observation, Evidence, Context>(
+  store: CoordinatedStore,
+  contract: EffectContract<Intent, Observation, Evidence, Context>,
+  existing: OperationRecord,
+  request: ResolvedRequest<Intent, Context>
+): Promise<EffectResult<Observation>> {
   const latest = existing.attempts[existing.attempts.length - 1];
   if (!latest) {
-    return await performAttempt(store, contract, existing, request.intent);
+    return await checkThenAttempt(store, contract, existing, request);
   }
 
   if (latest.status === "RESERVED") {
@@ -530,7 +723,7 @@ async function runCoordinated<Intent, Observation, Evidence>(
   if (latest.disposition === "RETRY") {
     if (latest.transport.ok) {
       // execute() returned a response: that request is finished, the NOT_APPLIED was final.
-      return await performAttempt(store, contract, existing, request.intent);
+      return await checkThenAttempt(store, contract, existing, request);
     }
     // The failed request could still land. Nothing happens before retryNotBefore.
     if (latest.retryNotBefore && Date.parse(await safetyNow(store)) < Date.parse(latest.retryNotBefore)) {
@@ -548,7 +741,7 @@ async function runCoordinated<Intent, Observation, Evidence>(
       settledLatest.disposition === "RETRY" &&
       !settledLatest.retryNotBefore
     ) {
-      return await performAttempt(store, contract, settled, request.intent);
+      return await checkThenAttempt(store, contract, settled, request);
     }
     return resultFromRecord(settled);
   }

@@ -1,5 +1,5 @@
 import { StoreConflictError } from "../core/store";
-import type { CoordinatedStore, EffectStore, NewOperationInput, OperationLock } from "../core/store";
+import type { CoordinatedStore, EffectStore, NewOperationInput, OperationLock, OperationUpdate } from "../core/store";
 import type { AttemptRecord, OperationRecord, OperationStatus, ReservedAttemptInput } from "../core/types";
 
 /**
@@ -110,7 +110,8 @@ export class InMemoryStore implements EffectStore {
         status: "RESERVED",
         attemptNumber: reserved.attemptNumber,
         startedAt: reserved.startedAt,
-        updatedAt: reserved.startedAt
+        updatedAt: reserved.startedAt,
+        ...(reserved.check ? { check: reserved.check } : {})
       });
     });
   }
@@ -142,6 +143,21 @@ export class InMemoryStore implements EffectStore {
     });
   }
 
+  async updateOperation(identityId: string, update: OperationUpdate, expectedVersion: number): Promise<OperationRecord> {
+    return this.write(identityId, expectedVersion, (record) => {
+      if (update.status !== undefined) record.status = update.status;
+      if (update.reviewReason !== undefined) {
+        if (update.reviewReason === null) delete record.reviewReason;
+        else record.reviewReason = update.reviewReason;
+      }
+      if (update.blockedBy !== undefined) {
+        if (update.blockedBy === null) delete record.blockedBy;
+        else record.blockedBy = update.blockedBy;
+      }
+    });
+  }
+
+  /** @deprecated See CoordinatedStore.setStatus. */
   async setStatus(identityId: string, status: OperationStatus, expectedVersion: number): Promise<OperationRecord> {
     return this.write(identityId, expectedVersion, (record) => {
       record.status = status;
