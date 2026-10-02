@@ -1,6 +1,6 @@
 {
   "name": "corrobo",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Safe retries for external side effects: when a timeout or crash leaves you unsure whether a write happened, check the real system before doing it again.",
   "license": "MIT",
   "homepage": "https://github.com/vidithsalla/corrobo#readme",
@@ -41,7 +41,8 @@
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "default": "./dist/testing/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "typesVersions": {
     "*": {
@@ -78,6 +79,7 @@
     "example:stripe:live-smoke": "tsx examples/stripe-refund/live-smoke.ts",
     "example:jev": "tsx examples/jev-refund/demo.ts",
     "example:jev:live": "tsx examples/jev-refund/live.ts",
+    "example:action-table": "tsx examples/action-table/demo.ts",
     "verify": "npm run typecheck && npm run test && npm run build"
   },
   "devDependencies": {

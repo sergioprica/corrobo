@@ -67,7 +67,7 @@ one worked example, not a template to force onto every operation.
 
 ## Where corrobo's actual API sits (for integration mode)
 
-- Core lifecycle: `intent → authorize()? → execute() → observe() → reconcile() → evidence state → disposition`.
-- Public entry point: `runEffect(store, contract, request)` from `corrobo` (or a relative path to `src/core` inside this monorepo, since corrobo is not yet published to npm).
+- Core lifecycle: `intent → authorize()? → [observe/settle] → revalidate()? → reserve → execute() → observe() → reconcile() → evidence state → disposition`.
+- Public entry point: `runEffect(store, contract, request)` from `corrobo` (on npm; or a relative path to `src/core` inside this repo).
 - Stores: `InMemoryStore` (from `corrobo`) for tests/local dev only; `PostgresStore` (from `corrobo/postgres`) for anything production-shaped.
 - Fault-testing helpers (`FaultSchedule`, `withFaultInjection`, `withObservationFault`) live in `corrobo/testing` and are architecturally separate from the production path — use them (or a small hand-rolled fake client, as in `examples/stripe-refund`, when the target API's shape doesn't fit the generic decorator pattern) to write fault tests, never to alter runtime behavior.

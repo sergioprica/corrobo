@@ -2,13 +2,14 @@ import type { EffectContract, EvidenceState, ObservationResult, ReasonCode, Reco
 
 /**
  * Defines an effect contract with the observation and evidence types inferred from your
- * observe() and execute() — only the intent type needs to be named. Purely a typing aid: it
- * returns the contract unchanged.
+ * observe() and execute() — only the intent type needs to be named (and, if authorize() or
+ * revalidate() read it, the type of EffectRequest.context). Purely a typing aid: it returns
+ * the contract unchanged.
  *
  *   const refund = defineContract<RefundIntent>()({ operationType: "payments/refund", ... });
  */
-export function defineContract<Intent>() {
-  return <Observation, Evidence>(contract: EffectContract<Intent, Observation, Evidence>) => contract;
+export function defineContract<Intent, Context = unknown>() {
+  return <Observation, Evidence>(contract: EffectContract<Intent, Observation, Evidence, Context>) => contract;
 }
 
 /**

@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { StoreConflictError } from "../core/store";
-import type { CoordinatedStore, EffectStore, NewOperationInput, OperationLock } from "../core/store";
+import type { CoordinatedStore, EffectStore, NewOperationInput, OperationLock, OperationUpdate } from "../core/store";
 import type {
   AttemptRecord,
+  BlockingCheck,
   ObservationResult,
   OperationRecord,
   OperationStatus,
+  RecordedReview,
   ReservedAttemptInput,
   TransportOutcome
 } from "../core/types";
@@ -13,9 +15,9 @@ import type {
 const TABLE = "corrobo_operations";
 
 /**
- * DDL for the single table this store needs. Safe to run repeatedly. The trailing ALTER
- * upgrades a table created by corrobo <= 0.2.x (which had no `version` column) in place;
- * existing rows start at version 0.
+ * DDL for the single table this store needs. Safe to run repeatedly. The trailing ALTERs
+ * upgrade a table created by an earlier corrobo in place: `version` (added in 0.3.0; existing
+ * rows start at 0), and `blocked_by` and `review` (0.4.0; nullable).
  */
 export const POSTGRES_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS ${TABLE} (
@@ -30,6 +32,8 @@ CREATE TABLE IF NOT EXISTS ${TABLE} (
   version BIGINT NOT NULL DEFAULT 0
 );
 ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS blocked_by JSONB;
+ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS review JSONB;
 `;
 
 interface Row {
@@ -39,6 +43,8 @@ interface Row {
   status: OperationStatus;
   review_reason: unknown;
   attempts: AttemptRecord[];
+  blocked_by: BlockingCheck | null;
+  review: RecordedReview | null;
   created_at: Date;
   updated_at: Date;
   /** BIGINT: node-postgres returns it as a string. */
@@ -78,6 +84,8 @@ function rowToRecord(row: Row): OperationRecord {
     status: row.status,
     reviewReason: (row.review_reason as OperationRecord["reviewReason"]) ?? undefined,
     attempts: row.attempts,
+    ...(row.blocked_by ? { blockedBy: row.blocked_by } : {}),
+    ...(row.review ? { review: row.review } : {}),
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     version: Number(row.version)
@@ -218,7 +226,8 @@ async function reserveAttemptImpl(
     status: "RESERVED",
     attemptNumber: reserved.attemptNumber,
     startedAt: reserved.startedAt,
-    updatedAt: reserved.startedAt
+    updatedAt: reserved.startedAt,
+    ...(reserved.check ? { check: reserved.check } : {})
   };
   const result = await q.query<Row>(
     `UPDATE ${TABLE} SET attempts = attempts || $2::jsonb, updated_at = now(), version = version + 1
@@ -291,6 +300,34 @@ async function setStatusImpl(
   return versionedWriteResult(q, identityId, expectedVersion, result.rows[0]);
 }
 
+/** JSONB columns of the operation itself; each is written only when present in the update. */
+const UPDATABLE_JSON_COLUMNS = { reviewReason: "review_reason", blockedBy: "blocked_by", review: "review" } as const;
+
+async function updateOperationImpl(
+  q: Queryable,
+  identityId: string,
+  update: OperationUpdate,
+  expectedVersion: number
+): Promise<OperationRecord> {
+  const params: unknown[] = [identityId, expectedVersion];
+  const sets = ["updated_at = now()", "version = version + 1"];
+  if (update.status !== undefined) {
+    params.push(update.status);
+    sets.push(`status = $${params.length}`);
+  }
+  for (const [field, column] of Object.entries(UPDATABLE_JSON_COLUMNS) as [keyof typeof UPDATABLE_JSON_COLUMNS, string][]) {
+    const value = update[field];
+    if (value === undefined) continue;
+    params.push(value === null ? null : JSON.stringify(value));
+    sets.push(`${column} = $${params.length}::jsonb`);
+  }
+  const result = await q.query<Row>(
+    `UPDATE ${TABLE} SET ${sets.join(", ")} WHERE id = $1 AND version = $2 RETURNING *`,
+    params
+  );
+  return versionedWriteResult(q, identityId, expectedVersion, result.rows[0]);
+}
+
 function boundStore(q: Queryable): CoordinatedStore {
   return {
     getOperation: (id) => getOperationImpl(q, id),
@@ -298,6 +335,7 @@ function boundStore(q: Queryable): CoordinatedStore {
     reserveAttempt: (id, r, v) => reserveAttemptImpl(q, id, r, v),
     appendAttempt: (id, a, s, v) => appendAttemptImpl(q, id, a, s, v),
     updateLatestAttempt: (id, a, s, v) => updateLatestAttemptImpl(q, id, a, s, v),
+    updateOperation: (id, u, v) => updateOperationImpl(q, id, u, v),
     setStatus: (id, s, v) => setStatusImpl(q, id, s, v),
     now: () => nowImpl(q)
   };
@@ -432,6 +470,11 @@ export class PostgresStore implements EffectStore {
     return updateLatestAttemptImpl(this.pool, identityId, attempt, status, expectedVersion);
   }
 
+  updateOperation(identityId: string, update: OperationUpdate, expectedVersion: number): Promise<OperationRecord> {
+    return updateOperationImpl(this.pool, identityId, update, expectedVersion);
+  }
+
+  /** @deprecated See CoordinatedStore.setStatus. */
   setStatus(identityId: string, status: OperationStatus, expectedVersion: number): Promise<OperationRecord> {
     return setStatusImpl(this.pool, identityId, status, expectedVersion);
   }

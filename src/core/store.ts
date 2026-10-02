@@ -1,6 +1,8 @@
 import type {
   AttemptRecord,
+  BlockingCheck,
   OperationIdentity,
+  RecordedReview,
   OperationRecord,
   OperationStatus,
   ReasonCode,
@@ -37,6 +39,17 @@ export interface NewOperationInput {
   intent: unknown;
   status: OperationStatus;
   reviewReason?: ReasonCode;
+}
+
+/**
+ * Fields of the operation itself (not its attempts) that runEffect() changes. A field that is
+ * absent is left as it is; `null` clears it.
+ */
+export interface OperationUpdate {
+  status?: OperationStatus;
+  reviewReason?: ReasonCode | null;
+  blockedBy?: BlockingCheck | null;
+  review?: RecordedReview | null;
 }
 
 /**
@@ -82,6 +95,10 @@ export interface CoordinatedStore {
     expectedVersion: number
   ): Promise<OperationRecord>;
 
+  /** Applies `update` to the operation's own fields (see OperationUpdate), version-checked like every write. */
+  updateOperation(identityId: string, update: OperationUpdate, expectedVersion: number): Promise<OperationRecord>;
+
+  /** @deprecated runEffect() no longer calls this; use updateOperation({ status }). It will be removed in 0.5. */
   setStatus(identityId: string, status: OperationStatus, expectedVersion: number): Promise<OperationRecord>;
 
   /**
