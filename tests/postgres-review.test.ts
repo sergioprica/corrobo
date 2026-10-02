@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { PostgresStore } from "../src/stores/postgres";
-import { runEffect } from "../src/core/runtime";
+import { OperationBusyError, reviewEffect, runEffect } from "../src/core/runtime";
 import { fingerprintIntent } from "../src/core/fingerprint";
 import { defineContract, observed, reconciled } from "../src/core/helpers";
 
@@ -73,17 +73,24 @@ describe.skipIf(!connectionString)("PostgresStore: recorded review decisions", (
     const intent = { orderId: "7" };
     const store = new PostgresStore(pool, { acknowledgePersistence: true });
     await runEffect(store, contract, { identity: "pg-a1", intent });
-    const result = await runEffect(store, contract, {
-      identity: "pg-a1",
-      intent,
-      reviewDecision: {
-        decision: "approved",
-        reviewer: "alice@example.com",
-        decidedAt: "2026-10-01T11:59:00.000Z",
-        expiresAt: "2099-01-01T00:00:00.000Z",
-        note: "ok"
-      }
-    });
+    // The review screen and the worker are different processes.
+    const reviewPool = new Pool({ connectionString });
+    try {
+      await reviewEffect(new PostgresStore(reviewPool, { acknowledgePersistence: true }), contract, {
+        identity: "pg-a1",
+        decision: {
+          decision: "approved",
+          reviewer: "alice@example.com",
+          decidedAt: "2026-10-01T11:59:00.000Z",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          note: "ok"
+        }
+      });
+    } finally {
+      await reviewPool.end();
+    }
+    expect(credits.filter((c) => c === "pg-a1")).toHaveLength(0);
+    const result = await runEffect(store, contract, { identity: "pg-a1", intent });
     expect(result.disposition).toBe("COMPLETE");
 
     const restarted = new Pool({ connectionString });
@@ -106,11 +113,7 @@ describe.skipIf(!connectionString)("PostgresStore: recorded review decisions", (
   it("a rejection is recorded with the reviewer and reported from a fresh read", async () => {
     const store = new PostgresStore(pool, { acknowledgePersistence: true });
     await runEffect(store, contract, { identity: "pg-r1", intent: { orderId: "8" } });
-    await runEffect(store, contract, {
-      identity: "pg-r1",
-      intent: { orderId: "8" },
-      reviewDecision: { decision: "rejected", reviewer: "carol" }
-    });
+    await reviewEffect(store, contract, { identity: "pg-r1", decision: { decision: "rejected", reviewer: "carol" } });
     const reread = await runEffect(new PostgresStore(pool, { acknowledgePersistence: true }), contract, {
       identity: "pg-r1",
       intent: { orderId: "8" }
@@ -121,5 +124,21 @@ describe.skipIf(!connectionString)("PostgresStore: recorded review decisions", (
       review: { decision: "rejected", reviewer: "carol" }
     });
     expect(credits).not.toContain("pg-r1");
+  });
+
+  it("reviewEffect() throws OperationBusyError while another process holds the operation's advisory lock", async () => {
+    const store = new PostgresStore(pool, { acknowledgePersistence: true });
+    await runEffect(store, contract, { identity: "pg-busy", intent: { orderId: "10" } });
+    const otherPool = new Pool({ connectionString });
+    const lock = await new PostgresStore(otherPool, { acknowledgePersistence: true }).tryAcquireLock("pg-busy");
+    try {
+      await expect(
+        reviewEffect(store, contract, { identity: "pg-busy", decision: { decision: "approved", reviewer: "alice" } })
+      ).rejects.toBeInstanceOf(OperationBusyError);
+    } finally {
+      await lock?.release();
+      await otherPool.end();
+    }
+    expect((await store.getOperation("pg-busy"))?.review).toBeUndefined();
   });
 });
