@@ -122,8 +122,7 @@ export interface ReviewDecision {
 /** A review decision as corrobo recorded it on the operation (OperationRecord.review). */
 export interface RecordedReview {
   decision: "approved" | "rejected";
-  /** null only for a decision given in the deprecated string form ("approved" / "rejected"). */
-  reviewer: string | null;
+  reviewer: string;
   decidedAt: string;
   expiresAt?: string;
   note?: string;
@@ -353,6 +352,10 @@ export interface OperationRecord {
   version: number;
 }
 
+/**
+ * What runEffect() takes. It has no way to approve anything: review decisions are recorded with
+ * reviewEffect() (corrobo 0.3's `reviewDecision` field was removed in 0.4).
+ */
 export interface EffectRequest<Intent, Context = unknown> {
   /**
    * The operation's stable identity. A string is shorthand for
@@ -361,13 +364,6 @@ export interface EffectRequest<Intent, Context = unknown> {
    */
   identity: OperationIdentity | string;
   intent: Intent;
-  /**
-   * @deprecated Use reviewEffect() to record a decision (with who made it), then runEffect()
-   * to act on it. This form records no reviewer, and couples the decision to the call that
-   * executes: while it exists, never let a model or a worker set it (leave it out of any tool
-   * schema). It still works in 0.4 and will be removed in 0.5.
-   */
-  reviewDecision?: "approved" | "rejected";
   /**
    * Who is calling and with what scope, for authorize() and revalidate() to check. Per call:
    * not stored, not part of the intent's fingerprint.

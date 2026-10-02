@@ -239,16 +239,19 @@ describe("review decisions are recorded and bound", () => {
     expect(result.review).toMatchObject({ decidedAt: "2026-10-01T11:30:00.000Z", expiresAt: "2099-01-01T00:00:00.500Z" });
   });
 
-  it("the deprecated string form still works, and is recorded with reviewer null", async () => {
+  it("runEffect() refuses the reviewDecision field corrobo 0.3 took, and nothing is recorded or executed", async () => {
     const store = new ClockStore();
     const ledger = makeLedger();
     const contract = makeContract(ledger);
     await awaitingReview(store, contract, "a7");
-    const result = await runEffect(store, contract, { identity: "a7", intent, reviewDecision: "approved" });
-    expect(result.disposition).toBe("COMPLETE");
-    expect(result.review).toMatchObject({ decision: "approved", reviewer: null });
-    expect(result.attempts[0].check?.reason.summary).toBe("Approved in review.");
-    expect(ledger.count("a7")).toBe(1);
+    const before = await store.getOperation("a7");
+    for (const reviewDecision of ["approved", "rejected"]) {
+      await expect(
+        runEffect(store, contract, { identity: "a7", intent, reviewDecision } as unknown as Parameters<typeof runEffect>[2])
+      ).rejects.toThrow(/reviewEffect/);
+    }
+    expect(await store.getOperation("a7")).toEqual(before);
+    expect(ledger.credits).toEqual([]);
   });
 });
 
@@ -522,8 +525,8 @@ describe("reviewEffect(): deciding is separate from acting", () => {
       runEffect(store, contract, {
         identity: "s4",
         intent,
-        reviewDecision: { decision: "approved", reviewer: "agent" } as unknown as "approved"
-      })
+        reviewDecision: { decision: "approved", reviewer: "agent" }
+      } as unknown as Parameters<typeof runEffect>[2])
     ).rejects.toThrow(/reviewEffect/);
     expect(await store.getOperation("s4")).toEqual(before);
     expect(ledger.credits).toEqual([]);
@@ -606,5 +609,31 @@ describe("reviewEffect(): deciding is separate from acting", () => {
     expect(result).toMatchObject({ evidenceState: "APPLIED", disposition: "COMPLETE" });
     expect(observes).toBe(1);
     expect(ledger.count("s7")).toBe(1);
+  });
+
+  it("an approval on record without a reviewer isn't honored: it needs a new review", async () => {
+    const store = new ClockStore();
+    const ledger = makeLedger();
+    const contract = makeContract(ledger);
+    await awaitingReview(store, contract, "s8");
+    const record = await store.getOperation("s8");
+    await store.updateOperation(
+      "s8",
+      {
+        status: "OPEN",
+        review: {
+          decision: "approved",
+          reviewer: null as unknown as string,
+          decidedAt: store.iso(),
+          intentFingerprint: fingerprintIntent(contract, intent),
+          recordedAt: store.iso(),
+          attemptCount: 0
+        }
+      },
+      record!.version
+    );
+    const result = await runEffect(store, contract, { identity: "s8", intent });
+    expect(result).toMatchObject({ status: "AWAITING_REVIEW", dispositionReason: { code: "APPROVAL_NOT_RECORDED" } });
+    expect(ledger.credits).toEqual([]);
   });
 });
